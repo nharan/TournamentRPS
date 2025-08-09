@@ -8,33 +8,38 @@ use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use futures::{SinkExt, StreamExt};
 use rps_shared_types::{ClientToServer, ServerToClient, Assign as AssignMsg, Peer, RtcConfig, TurnStart, TurnResult, MatchResult};
+use sha2::{Digest, Sha256};
+use hex::ToHex;
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use jsonwebtoken::{DecodingKey, Validation, Algorithm};
+use serde::{Deserialize, Serialize};
+use reqwest::Client as HttpClient;
 
 async fn health() -> &'static str { "ok" }
 
 async fn ws_handler(Query(q): Query<WsAuth>, ws: WebSocketUpgrade) -> axum::response::Response {
-    if let Some(t) = q.ticket {
-        if !verify_ticket(&t) {
-            return (axum::http::StatusCode::UNAUTHORIZED, "invalid ticket").into_response();
-        }
-    } else {
-        return (axum::http::StatusCode::UNAUTHORIZED, "missing ticket").into_response();
-    }
-    ws.on_upgrade(handle_socket).into_response()
+    let Some(t) = q.ticket else { return (axum::http::StatusCode::UNAUTHORIZED, "missing ticket").into_response() };
+    let Some(claims) = verify_ticket(&t) else { return (axum::http::StatusCode::UNAUTHORIZED, "invalid ticket").into_response() };
+    ws.on_upgrade(move |socket| handle_socket(socket, claims.sub)).into_response()
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct WsAuth { ticket: Option<String> }
 
-fn verify_ticket(ticket: &str) -> bool {
+#[derive(Debug, Serialize, Deserialize)]
+struct Claims { sub: String, mid: String, exp: usize, iat: usize }
+
+fn verify_ticket(ticket: &str) -> Option<Claims> {
     let key = std::env::var("TICKET_SECRET").unwrap_or_else(|_| "dev-secret-change-me".into());
-    jsonwebtoken::decode::<serde_json::Value>(ticket, &jsonwebtoken::DecodingKey::from_secret(key.as_bytes()), &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256)).is_ok()
+    jsonwebtoken::decode::<Claims>(ticket, &DecodingKey::from_secret(key.as_bytes()), &Validation::new(Algorithm::HS256)).ok().map(|d| d.claims)
 }
 
-async fn handle_socket(mut socket: WebSocket) {
+async fn handle_socket(mut socket: WebSocket, did: String) {
     let mut p1_score: u32 = 0;
     let mut p2_score: u32 = 0;
     let mut current_turn: u32 = 1;
+    let http = HttpClient::new();
+    let match_engine = std::env::var("MATCH_ENGINE_HTTP").unwrap_or_else(|_| "http://localhost:8083".to_string());
     while let Some(Ok(msg)) = socket.next().await {
         match msg {
             Message::Text(txt) => {
@@ -68,14 +73,41 @@ async fn handle_socket(mut socket: WebSocket) {
                         }
                     }
                     Ok(ClientToServer::Reveal(rev)) => {
-                        // Minimal scoring: accept any reveal and alternate winner deterministically
+                        // Compute commit like match-engine
+                        let mut hasher = Sha256::new();
+                        hasher.update(rev.move_.as_bytes());
+                        hasher.update(rev.nonce.as_bytes());
+                        hasher.update(current_turn.to_be_bytes());
+                        hasher.update(rev.match_id.as_bytes());
+                        hasher.update(did.as_bytes());
+                        let commit = hasher.finalize().encode_hex::<String>();
+                        // Validate via match-engine
+                        let resp = http.post(format!("{}/reveal", match_engine))
+                            .json(&serde_json::json!({
+                                "commit": commit,
+                                "match_id": rev.match_id,
+                                "did": did,
+                                "turn": current_turn,
+                                "move_": rev.move_,
+                                "nonce": rev.nonce,
+                            }))
+                            .send().await;
+                        let valid = match resp {
+                            Ok(r) => r.json::<serde_json::Value>().await.ok().and_then(|v| v.get("valid").and_then(|b| b.as_bool())).unwrap_or(false),
+                            Err(_) => false,
+                        };
+                        if !valid {
+                            let _ = socket.send(Message::Text("{\"type\":\"ERROR\",\"data\":{\"code\":\"INVALID_REVEAL\",\"msg\":\"commit mismatch\"}}".into())).await;
+                            continue;
+                        }
+                        // Minimal scoring: alternate winner deterministically
                         let winner = if current_turn % 2 == 1 { "P1" } else { "P2" };
                         if winner == "P1" { p1_score += 1; } else { p2_score += 1; }
-                        let tr = TurnResult { match_id: rev.match_id.clone(), turn: current_turn, result: winner.into(), ai: Some(false) };
+                        let tr = TurnResult { match_id: String::new(), turn: current_turn, result: winner.into(), ai: Some(false) };
                         if let Ok(txt) = serde_json::to_string(&ServerToClient::TurnResult(tr)) { let _ = socket.send(Message::Text(txt)).await; }
                         if p1_score >= 5 || p2_score >= 5 {
                             let winner_id = if p1_score >= 5 { "P1" } else { "P2" };
-                            let mr = MatchResult { match_id: rev.match_id, winner: winner_id.into() };
+                            let mr = MatchResult { match_id: String::new(), winner: winner_id.into() };
                             if let Ok(txt) = serde_json::to_string(&ServerToClient::MatchResult(mr)) { let _ = socket.send(Message::Text(txt)).await; }
                             break;
                         }

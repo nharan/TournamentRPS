@@ -13,3 +13,6 @@ serde_json = { workspace = true }
 rps-shared-types = { path = "../../shared/rust-types" }
 futures = "0.3"
 jsonwebtoken = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
