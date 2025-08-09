@@ -34,3 +34,4 @@ tower-http = { version = "0.5", features = ["cors", "trace"] }
 axum-tungstenite = "0.5"
 tungstenite = "0.21"
 chrono = { version = "0.4", features = ["serde"] }
+jsonwebtoken = "9"

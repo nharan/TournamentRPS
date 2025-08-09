@@ -11,3 +11,5 @@ tracing-subscriber = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rps-shared-types = { path = "../../shared/rust-types" }
+futures = "0.3"
+jsonwebtoken = { workspace = true }
