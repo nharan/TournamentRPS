@@ -7,6 +7,7 @@ export default function HomePage() {
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const agent = useMemo(() => new BskyAgent({ service: `https://${process.env.NEXT_PUBLIC_ATPROTO_APPVIEW_HOST || 'api.bsky.app'}` }), []);
+  const apiBase = process.env.NEXT_PUBLIC_MATCH_ENGINE_HTTP || 'http://localhost:8083';
 
   const signIn = async () => {
     // MVP: App Password flow via prompt
@@ -55,6 +56,16 @@ export default function HomePage() {
           <div style={{ display: 'flex', gap: 12, marginTop: 12 }}>
             <button style={{ padding: 12 }}>Register</button>
             <button onClick={connectWs} style={{ padding: 12 }}>Connect</button>
+            <button onClick={async () => {
+              // Demo commit/reveal against match-engine
+              const mid = 'demo-1'; const nonce = Math.random().toString(36).slice(2);
+              const turn = 1; const move = 'R';
+              const cRes = await fetch(`${apiBase}/commit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ match_id: mid, did: session.did, turn, move_: move, nonce }) });
+              const { commit } = await cRes.json();
+              const rRes = await fetch(`${apiBase}/reveal`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ commit, match_id: mid, did: session.did, turn, move_: move, nonce }) });
+              const rj = await rRes.json();
+              alert(`Reveal valid=${rj.valid}`);
+            }} style={{ padding: 12 }}>Commit/Reveal</button>
           </div>
         </div>
       )}
