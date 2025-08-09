@@ -4,6 +4,7 @@ use tokio::net::TcpListener;
 use serde::{Deserialize, Serialize};
 use jsonwebtoken::{encode, Header, EncodingKey};
 use chrono::{Utc, Duration};
+use reqwest::Client as HttpClient;
 
 #[derive(Debug, Deserialize)]
 struct TicketRequest { did: String, match_id: String }
@@ -40,6 +41,18 @@ async fn ready_for_round(Json(req): Json<ReadyForRoundReq>) -> Json<ReadyForRoun
     // Deterministic stub match id and role for MVP
     let match_id = format!("{}-r{}-{}", req.tid, req.round, &req.did);
     let ticket = issue_jwt(&req.did, &match_id);
+    // Post round anchor stub to atproto-writer
+    let atw = std::env::var("ATPROTO_WRITER_HTTP").unwrap_or_else(|_| "http://localhost:8085".to_string());
+    let _ = HttpClient::new().post(format!("{}/round_anchor", atw))
+        .json(&serde_json::json!({
+            "tid": req.tid,
+            "round": req.round,
+            "aliveRoot": "0x00",
+            "pairingSeed": "0x00",
+            "merkleRoot": "0x00",
+            "postedAt": Utc::now().to_rfc3339(),
+        }))
+        .send().await;
     let resp = ReadyForRoundResp {
         match_id,
         role: "P1".into(),

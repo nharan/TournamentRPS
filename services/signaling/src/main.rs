@@ -48,8 +48,12 @@ async fn handle_socket(mut socket: WebSocket, did: String) {
     let (tx, mut rx) = mpsc::unbounded_channel::<InternalEvent>();
     let mut match_id_for_session: Option<String> = None;
     let turn_deadline_ms: u64 = std::env::var("TURN_DEADLINE_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(30_000);
-    while let Some(Ok(msg)) = socket.next().await {
-        match msg {
+    loop {
+        tokio::select! {
+            maybe_msg = socket.next() => {
+                let Some(res) = maybe_msg else { break };
+                let Ok(msg) = res else { break };
+                match msg {
             Message::Text(txt) => {
                 tracing::info!(incoming = %txt, "ws text");
                 // Try to parse a client message
@@ -132,9 +136,10 @@ async fn handle_socket(mut socket: WebSocket, did: String) {
                         // start next turn timer
                         let tx2 = tx.clone();
                         let mid_clone = match_id_for_session.clone().unwrap_or_default();
+                        let next_turn = current_turn;
                         tokio::spawn(async move {
                             sleep(Duration::from_millis(turn_deadline_ms)).await;
-                            let _ = tx2.send(InternalEvent::Timeout(current_turn, mid_clone));
+                            let _ = tx2.send(InternalEvent::Timeout(next_turn, mid_clone));
                         });
                     }
                     Ok(other) => {
@@ -155,11 +160,11 @@ async fn handle_socket(mut socket: WebSocket, did: String) {
             }
             Message::Ping(p) => { let _ = socket.send(Message::Pong(p)).await; }
             Message::Pong(_) => {}
-        }
-
-        // Handle internal timeout events
-        if let Ok(evt) = rx.try_recv() {
-            if let InternalEvent::Timeout(tn, _mid) = evt {
+                }
+            }
+            // Handle internal timeout events
+            Some(evt) = rx.recv() => {
+                let InternalEvent::Timeout(tn, _mid) = evt;
                 if tn != current_turn { continue; }
                 // fetch AI move (placeholder); outcome alternates deterministically
                 let _ = http.post(format!("{}/ai_move", fairness_http))
