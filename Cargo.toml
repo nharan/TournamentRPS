@@ -1,0 +1,36 @@
+[workspace]
+members = [
+  "services/signaling",
+  "services/coordinator",
+  "services/match-engine",
+  "services/fairness",
+  "services/atproto-writer",
+  "shared/rust-types",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+axum = { version = "0.7" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+thiserror = "1"
+anyhow = "1"
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4", "serde", "fast-rng"] }
+rand = "0.8"
+axum-extra = { version = "0.9", features = ["typed-header"] }
+clap = { version = "4", features = ["derive"] }
+serde_with = { version = "3" }
+reqwest = { version = "0.12", features = ["json", "gzip", "brotli", "rustls-tls"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+axum-tungstenite = "0.5"
+tungstenite = "0.21"
+chrono = { version = "0.4", features = ["serde"] }

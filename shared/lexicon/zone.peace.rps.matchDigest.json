@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "id": "zone.peace.rps.matchDigest",
+  "type": "object",
+  "properties": {
+    "tid": { "type": "string" },
+    "round": { "type": "integer", "minimum": 0 },
+    "mid": { "type": "string" },
+    "p1": { "type": "string" },
+    "p2": { "type": "string" },
+    "winner": { "type": "string" },
+    "commitsRoot": { "type": "string" },
+    "turns": { "type": "integer", "minimum": 0 },
+    "aiTurns": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+    "logUri": { "type": "string" },
+    "postedAt": { "type": "string", "format": "date-time" }
+  },
+  "required": ["tid","round","mid","p1","p2","winner","commitsRoot","turns","postedAt"],
+  "additionalProperties": false
+}

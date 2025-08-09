@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "id": "zone.peace.rps.roundAnchor",
+  "type": "object",
+  "properties": {
+    "tid": { "type": "string" },
+    "round": { "type": "integer", "minimum": 0 },
+    "aliveRoot": { "type": "string" },
+    "pairingSeed": { "type": "string" },
+    "merkleRoot": { "type": "string" },
+    "postedAt": { "type": "string", "format": "date-time" }
+  },
+  "required": ["tid", "round", "aliveRoot", "pairingSeed", "merkleRoot", "postedAt"],
+  "additionalProperties": false
+}
