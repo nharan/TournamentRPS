@@ -7,7 +7,7 @@ use axum::{
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use futures::{SinkExt, StreamExt};
-use rps_shared_types::{ClientToServer, ServerToClient, Assign as AssignMsg, Peer, RtcConfig, TurnStart};
+use rps_shared_types::{ClientToServer, ServerToClient, Assign as AssignMsg, Peer, RtcConfig, TurnStart, TurnResult, MatchResult};
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
 
 async fn health() -> &'static str { "ok" }
@@ -32,6 +32,9 @@ fn verify_ticket(ticket: &str) -> bool {
 }
 
 async fn handle_socket(mut socket: WebSocket) {
+    let mut p1_score: u32 = 0;
+    let mut p2_score: u32 = 0;
+    let mut current_turn: u32 = 1;
     while let Some(Ok(msg)) = socket.next().await {
         match msg {
             Message::Text(txt) => {
@@ -63,6 +66,20 @@ async fn handle_socket(mut socket: WebSocket) {
                         if let Ok(txt) = serde_json::to_string(&ServerToClient::TurnStart(turn_start)) {
                             let _ = socket.send(Message::Text(txt)).await;
                         }
+                    }
+                    Ok(ClientToServer::Reveal(rev)) => {
+                        // Minimal scoring: accept any reveal and alternate winner deterministically
+                        let winner = if current_turn % 2 == 1 { "P1" } else { "P2" };
+                        if winner == "P1" { p1_score += 1; } else { p2_score += 1; }
+                        let tr = TurnResult { match_id: rev.match_id.clone(), turn: current_turn, result: winner.into(), ai: Some(false) };
+                        if let Ok(txt) = serde_json::to_string(&ServerToClient::TurnResult(tr)) { let _ = socket.send(Message::Text(txt)).await; }
+                        if p1_score >= 5 || p2_score >= 5 {
+                            let winner_id = if p1_score >= 5 { "P1" } else { "P2" };
+                            let mr = MatchResult { match_id: rev.match_id, winner: winner_id.into() };
+                            if let Ok(txt) = serde_json::to_string(&ServerToClient::MatchResult(mr)) { let _ = socket.send(Message::Text(txt)).await; }
+                            break;
+                        }
+                        current_turn += 1;
                     }
                     Ok(other) => {
                         tracing::info!(?other, "unhandled client message");

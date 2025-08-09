@@ -5,6 +5,7 @@ import { BskyAgent } from '@atproto/api';
 export default function HomePage() {
   const [session, setSession] = useState<{ did: string; handle: string } | null>(null);
   const [ws, setWs] = useState<WebSocket | null>(null);
+  const [log, setLog] = useState<string[]>([]);
   const agent = useMemo(() => new BskyAgent({ service: `https://${process.env.NEXT_PUBLIC_ATPROTO_APPVIEW_HOST || 'api.bsky.app'}` }), []);
 
   const signIn = async () => {
@@ -37,7 +38,7 @@ export default function HomePage() {
       socket.send(JSON.stringify({ type: 'READY_FOR_ROUND', data: { tid: 'demo', round: 1 } }));
     };
     socket.onmessage = (ev) => {
-      console.log('WS message', ev.data);
+      setLog((prev) => [String(ev.data), ...prev].slice(0, 50));
     };
     socket.onclose = () => setWs(null);
     setWs(socket);
@@ -60,6 +61,11 @@ export default function HomePage() {
       <section>
         <h2>Audit</h2>
         <p>Round anchors and logs will be listed here for public verification.</p>
+        {!!log.length && (
+          <pre style={{ whiteSpace: 'pre-wrap', background: '#111', color: '#eee', padding: 12, borderRadius: 6 }}>
+            {log.join('\n')}
+          </pre>
+        )}
       </section>
     </main>
   );
