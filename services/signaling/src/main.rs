@@ -14,6 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use jsonwebtoken::{DecodingKey, Validation, Algorithm};
 use serde::{Deserialize, Serialize};
 use reqwest::Client as HttpClient;
+use tokio::sync::mpsc;
+use tokio::time::sleep;
 
 async fn health() -> &'static str { "ok" }
 
@@ -34,12 +36,18 @@ fn verify_ticket(ticket: &str) -> Option<Claims> {
     jsonwebtoken::decode::<Claims>(ticket, &DecodingKey::from_secret(key.as_bytes()), &Validation::new(Algorithm::HS256)).ok().map(|d| d.claims)
 }
 
+enum InternalEvent { Timeout(u32, String) }
+
 async fn handle_socket(mut socket: WebSocket, did: String) {
     let mut p1_score: u32 = 0;
     let mut p2_score: u32 = 0;
     let mut current_turn: u32 = 1;
     let http = HttpClient::new();
     let match_engine = std::env::var("MATCH_ENGINE_HTTP").unwrap_or_else(|_| "http://localhost:8083".to_string());
+    let fairness_http = std::env::var("FAIRNESS_HTTP").unwrap_or_else(|_| "http://localhost:8084".to_string());
+    let (tx, mut rx) = mpsc::unbounded_channel::<InternalEvent>();
+    let mut match_id_for_session: Option<String> = None;
+    let turn_deadline_ms: u64 = std::env::var("TURN_DEADLINE_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(30_000);
     while let Some(Ok(msg)) = socket.next().await {
         match msg {
             Message::Text(txt) => {
@@ -57,6 +65,7 @@ async fn handle_socket(mut socket: WebSocket, did: String) {
                             peer: Peer { did: "did:plc:peer".into(), handle: "opponent.example".into() },
                             rtc: RtcConfig { turns: vec![] },
                         };
+                        match_id_for_session = Some(assign.match_id.clone());
                         if let Ok(txt) = serde_json::to_string(&ServerToClient::Assign(assign)) {
                             let _ = socket.send(Message::Text(txt)).await;
                         }
@@ -67,10 +76,18 @@ async fn handle_socket(mut socket: WebSocket, did: String) {
                             .duration_since(UNIX_EPOCH)
                             .unwrap_or(Duration::from_millis(0))
                             .as_millis() as i64;
-                        let turn_start = TurnStart { match_id: format!("{}_{}", req.tid, req.round), turn: 1, deadline_ms_epoch: deadline };
+                        let mid = format!("{}_{}", req.tid, req.round);
+                        let turn_start = TurnStart { match_id: mid.clone(), turn: 1, deadline_ms_epoch: deadline };
                         if let Ok(txt) = serde_json::to_string(&ServerToClient::TurnStart(turn_start)) {
                             let _ = socket.send(Message::Text(txt)).await;
                         }
+                        // schedule timeout for turn 1
+                        let tx2 = tx.clone();
+                        let mid_clone = mid.clone();
+                        tokio::spawn(async move {
+                            sleep(Duration::from_millis(turn_deadline_ms)).await;
+                            let _ = tx2.send(InternalEvent::Timeout(1, mid_clone));
+                        });
                     }
                     Ok(ClientToServer::Reveal(rev)) => {
                         // Compute commit like match-engine
@@ -103,15 +120,22 @@ async fn handle_socket(mut socket: WebSocket, did: String) {
                         // Minimal scoring: alternate winner deterministically
                         let winner = if current_turn % 2 == 1 { "P1" } else { "P2" };
                         if winner == "P1" { p1_score += 1; } else { p2_score += 1; }
-                        let tr = TurnResult { match_id: String::new(), turn: current_turn, result: winner.into(), ai: Some(false) };
+                        let tr = TurnResult { match_id: match_id_for_session.clone().unwrap_or_default(), turn: current_turn, result: winner.into(), ai: Some(false) };
                         if let Ok(txt) = serde_json::to_string(&ServerToClient::TurnResult(tr)) { let _ = socket.send(Message::Text(txt)).await; }
                         if p1_score >= 5 || p2_score >= 5 {
                             let winner_id = if p1_score >= 5 { "P1" } else { "P2" };
-                            let mr = MatchResult { match_id: String::new(), winner: winner_id.into() };
+                            let mr = MatchResult { match_id: match_id_for_session.clone().unwrap_or_default(), winner: winner_id.into() };
                             if let Ok(txt) = serde_json::to_string(&ServerToClient::MatchResult(mr)) { let _ = socket.send(Message::Text(txt)).await; }
                             break;
                         }
                         current_turn += 1;
+                        // start next turn timer
+                        let tx2 = tx.clone();
+                        let mid_clone = match_id_for_session.clone().unwrap_or_default();
+                        tokio::spawn(async move {
+                            sleep(Duration::from_millis(turn_deadline_ms)).await;
+                            let _ = tx2.send(InternalEvent::Timeout(current_turn, mid_clone));
+                        });
                     }
                     Ok(other) => {
                         tracing::info!(?other, "unhandled client message");
@@ -131,6 +155,35 @@ async fn handle_socket(mut socket: WebSocket, did: String) {
             }
             Message::Ping(p) => { let _ = socket.send(Message::Pong(p)).await; }
             Message::Pong(_) => {}
+        }
+
+        // Handle internal timeout events
+        if let Ok(evt) = rx.try_recv() {
+            if let InternalEvent::Timeout(tn, _mid) = evt {
+                if tn != current_turn { continue; }
+                // fetch AI move (placeholder); outcome alternates deterministically
+                let _ = http.post(format!("{}/ai_move", fairness_http))
+                    .json(&serde_json::json!({"match_id": match_id_for_session.clone().unwrap_or_default(), "turn": current_turn}))
+                    .send().await;
+                let winner = if current_turn % 2 == 1 { "P1" } else { "P2" };
+                if winner == "P1" { p1_score += 1; } else { p2_score += 1; }
+                let tr = TurnResult { match_id: match_id_for_session.clone().unwrap_or_default(), turn: current_turn, result: winner.into(), ai: Some(true) };
+                if let Ok(txt) = serde_json::to_string(&ServerToClient::TurnResult(tr)) { let _ = socket.send(Message::Text(txt)).await; }
+                if p1_score >= 5 || p2_score >= 5 {
+                    let winner_id = if p1_score >= 5 { "P1" } else { "P2" };
+                    let mr = MatchResult { match_id: match_id_for_session.clone().unwrap_or_default(), winner: winner_id.into() };
+                    if let Ok(txt) = serde_json::to_string(&ServerToClient::MatchResult(mr)) { let _ = socket.send(Message::Text(txt)).await; }
+                    break;
+                }
+                current_turn += 1;
+                // schedule next timeout
+                let tx2 = tx.clone();
+                let mid_clone = match_id_for_session.clone().unwrap_or_default();
+                tokio::spawn(async move {
+                    sleep(Duration::from_millis(turn_deadline_ms)).await;
+                    let _ = tx2.send(InternalEvent::Timeout(current_turn, mid_clone));
+                });
+            }
         }
     }
 }
