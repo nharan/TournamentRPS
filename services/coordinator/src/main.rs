@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use jsonwebtoken::{encode, Header, EncodingKey};
 use chrono::{Utc, Duration};
 use reqwest::Client as HttpClient;
+use tower_http::cors::{CorsLayer, Any};
 
 #[derive(Debug, Deserialize)]
 struct TicketRequest { did: String, match_id: String }
@@ -82,7 +83,8 @@ async fn main() {
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/ticket", post(issue_ticket))
-        .route("/ready_for_round", post(ready_for_round));
+        .route("/ready_for_round", post(ready_for_round))
+        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any));
 
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));

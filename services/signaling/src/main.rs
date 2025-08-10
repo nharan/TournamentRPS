@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use reqwest::Client as HttpClient;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
+use tower_http::cors::{CorsLayer, Any};
 
 async fn health() -> &'static str { "ok" }
 
@@ -101,28 +102,34 @@ async fn handle_socket(mut socket: WebSocket, did: String) {
                         hasher.update(current_turn.to_be_bytes());
                         hasher.update(rev.match_id.as_bytes());
                         hasher.update(did.as_bytes());
-                        let commit = hasher.finalize().encode_hex::<String>();
-                        // Validate via match-engine
-                        let resp = http.post(format!("{}/reveal", match_engine))
-                            .json(&serde_json::json!({
-                                "commit": commit,
-                                "match_id": rev.match_id,
-                                "did": did,
-                                "turn": current_turn,
-                                "move_": rev.move_,
-                                "nonce": rev.nonce,
-                            }))
-                            .send().await;
-                        let valid = match resp {
-                            Ok(r) => r.json::<serde_json::Value>().await.ok().and_then(|v| v.get("valid").and_then(|b| b.as_bool())).unwrap_or(false),
-                            Err(_) => false,
+                        let _commit = hasher.finalize().encode_hex::<String>();
+
+                        // Ask Fairness for opponent move (AI) and score against user's move
+                        let opp = match http
+                            .post(format!("{}/ai_move", fairness_http))
+                            .json(&serde_json::json!({"match_id": match_id_for_session.clone().unwrap_or_default(), "turn": current_turn}))
+                            .send()
+                            .await
+                        {
+                            Ok(resp) => match resp.json::<serde_json::Value>().await.ok() {
+                                Some(v) => v
+                                    .get("rps")
+                                    .and_then(|c| c.as_str().map(|s| s.chars().next().unwrap_or('R')))
+                                    .unwrap_or('R'),
+                                None => 'R',
+                            },
+                            Err(_) => 'R',
                         };
-                        if !valid {
-                            let _ = socket.send(Message::Text("{\"type\":\"ERROR\",\"data\":{\"code\":\"INVALID_REVEAL\",\"msg\":\"commit mismatch\"}}".into())).await;
-                            continue;
-                        }
-                        // Minimal scoring: alternate winner deterministically
-                        let winner = if current_turn % 2 == 1 { "P1" } else { "P2" };
+
+                        let user = rev.move_.chars().next().unwrap_or('R');
+                        let beats = |a: char, b: char| match (a, b) { ('R','S')|('S','P')|('P','R') => true, _ => false };
+                        let winner = if user == opp {
+                            "DRAW"
+                        } else if beats(user, opp) {
+                            "P1"
+                        } else {
+                            "P2"
+                        };
                         if winner == "P1" { p1_score += 1; } else { p2_score += 1; }
                         let tr = TurnResult { match_id: match_id_for_session.clone().unwrap_or_default(), turn: current_turn, result: winner.into(), ai: Some(false) };
                         if let Ok(txt) = serde_json::to_string(&ServerToClient::TurnResult(tr)) { let _ = socket.send(Message::Text(txt)).await; }
@@ -200,7 +207,8 @@ async fn main() {
     let app = Router::new()
         .route("/healthz", get(health))
         .route("/ws", get(ws_handler))
-        .route("/ready", post(|| async { "ok" }));
+        .route("/ready", post(|| async { "ok" }))
+        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any));
 
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
