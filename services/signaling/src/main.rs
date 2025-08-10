@@ -253,7 +253,8 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                             // Broadcast one canonical result to all peers
                             let tr_all = TurnResult { match_id: mid_now.clone(), turn: turn_idx, result: winner.into(), ai: Some(false), ai_for_dids: Some(vec![]), p1_move: Some(um.to_string()), p2_move: Some(om.to_string()) };
                             if let Ok(txt_all) = serde_json::to_string(&ServerToClient::TurnResult(tr_all)) {
-                                // broadcast via mailbox only (avoid duplicate send to this socket)
+                                // send to this socket as well as broadcast via mailbox for robustness
+                                let _ = socket.send(Message::Text(txt_all.clone())).await;
                                 let peers = MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default();
                                 for p in peers { let _ = p.send(txt_all.clone()); }
                             }
@@ -276,7 +277,11 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                                 ts_map.insert(mid_now.clone(), (current_turn, next_deadline));
                             }
                             let ts = TurnStart { match_id: mid_now.clone(), turn: current_turn, deadline_ms_epoch: next_deadline };
-                            if let Ok(txt_ts) = serde_json::to_string(&ServerToClient::TurnStart(ts)) { let peers = { MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default() }; for p in peers { let _ = p.send(txt_ts.clone()); } }
+                            if let Ok(txt_ts) = serde_json::to_string(&ServerToClient::TurnStart(ts)) {
+                                let _ = socket.send(Message::Text(txt_ts.clone())).await;
+                                let peers = { MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default() };
+                                for p in peers { let _ = p.send(txt_ts.clone()); }
+                            }
                             // schedule next turn timeout always
                             let tx2 = tx.clone();
                             let mid_clone = mid_now.clone();
@@ -344,7 +349,11 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                 let winner = if p1_move_c == p2_move_c { "DRAW" } else if beats(p1_move_c, p2_move_c) { "P1" } else { "P2" };
                 if winner == "P1" { p1_score += 1; } else if winner == "P2" { p2_score += 1; }
                 let tr_all = TurnResult { match_id: mid_now.clone(), turn: current_turn, result: winner.into(), ai: Some(!missing_dids.is_empty()), ai_for_dids: Some(missing_dids.clone()), p1_move: Some(p1_move_c.to_string()), p2_move: Some(p2_move_c.to_string()) };
-                if let Ok(txt_all) = serde_json::to_string(&ServerToClient::TurnResult(tr_all)) { let peers = { MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default() }; for p in peers { let _ = p.send(txt_all.clone()); } }
+                if let Ok(txt_all) = serde_json::to_string(&ServerToClient::TurnResult(tr_all)) {
+                    let _ = socket.send(Message::Text(txt_all.clone())).await;
+                    let peers = { MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default() };
+                    for p in peers { let _ = p.send(txt_all.clone()); }
+                }
                 {
                     let mut resolved = TURN_RESOLVED.lock().unwrap();
                     let key = format!("{}#{}", mid_now, current_turn);
