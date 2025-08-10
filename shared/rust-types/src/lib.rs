@@ -15,7 +15,13 @@ pub struct Peer { pub did: String, pub handle: String }
 pub struct RtcConfig { pub turns: Vec<String> }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TurnStart { pub match_id: String, pub turn: u32, pub deadline_ms_epoch: i64 }
+pub struct TurnStart {
+  pub match_id: String,
+  pub turn: u32,
+  pub deadline_ms_epoch: i64,
+  // Server current time in ms epoch when the event was created; clients can compute offset
+  pub now_ms_epoch: i64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnResult {

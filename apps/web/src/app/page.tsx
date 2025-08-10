@@ -28,6 +28,12 @@ export default function HomePage() {
   const [turnsTable, setTurnsTable] = useState<Array<{ turn: number; you: 'R'|'P'|'S'|'-'; opp: 'R'|'P'|'S'|'-'; result: 'WIN'|'LOSE'|'DRAW'; timeout: 'YOU'|'OPP'|'NONE' }>>([]);
   const [processed, setProcessed] = useState<Record<number, boolean>>({});
   const [auditSeen, setAuditSeen] = useState<Record<string, boolean>>({});
+  const shortDid = (d?: string | null) => d ? ((d.startsWith('did:plc:') ? d.slice(8, 14) : d.slice(0, 6)) + '…') : '-';
+  const roundFromMid = useMemo(() => {
+    if (!matchId) return null;
+    const m = matchId.match(/-r(\d+)/);
+    return m ? Number(m[1]) : null;
+  }, [matchId]);
 
   const MoveChip = ({ move, align = 'left' as 'left'|'right' }) => {
     const label = (move || '-') as 'R'|'P'|'S'|'-';
@@ -51,11 +57,12 @@ export default function HomePage() {
     return t === 'TURN_START' || t === 'TURN_RESULT' || t === 'MATCH_RESULT' || t === 'ERROR';
   };
 
-  // countdown ticker (useEffect so it actually runs)
+  // countdown ticker using server clock offset when available
   useEffect(() => {
     const t = setInterval(() => {
       if (!deadline) { setSecondsLeft(0); return; }
-      const s = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      const now = Date.now() + (window as any).__serverClockSkewMs__ || Date.now();
+      const s = Math.max(0, Math.ceil((deadline - now) / 1000));
       setSecondsLeft(s);
     }, 300);
     return () => clearInterval(t);
@@ -130,6 +137,10 @@ export default function HomePage() {
           } else if (msg.type === 'TURN_START') {
             setTurn(msg.turn ?? 0);
             if (msg.match_id) setMatchId(msg.match_id);
+            if (typeof msg.now_ms_epoch === 'number') {
+              const localNow = Date.now();
+              (window as any).__serverClockSkewMs__ = Number(msg.now_ms_epoch) - localNow;
+            }
             if (msg.deadline_ms_epoch) setDeadline(Number(msg.deadline_ms_epoch));
           } else if (msg.type === 'MATCH_RESULT') {
             setTurn(0);
@@ -235,6 +246,10 @@ export default function HomePage() {
         } else if (msg.type === 'TURN_START') {
           setTurn(msg.turn ?? 0);
           if (msg.match_id) setMatchId(msg.match_id);
+          if (typeof msg.now_ms_epoch === 'number') {
+            const localNow = Date.now();
+            (window as any).__serverClockSkewMs__ = Number(msg.now_ms_epoch) - localNow;
+          }
           if (msg.deadline_ms_epoch) setDeadline(Number(msg.deadline_ms_epoch));
         } else if (msg.type === 'MATCH_RESULT') {
           setTurn(0);
@@ -327,11 +342,11 @@ export default function HomePage() {
         </div>
       ) : (
         <div>
-          <div>Signed in as: <strong>{session.handle}</strong> ({session.did})</div>
+          <div>Signed in as: <strong>{session.handle}</strong> <span style={{ opacity: 0.7 }}>({shortDid(session.did)})</span></div>
           {role && (
             <>
               <div style={{ marginTop: 6, fontSize: 14, opacity: 0.85 }}>
-                Role: <strong>{role}</strong> • Match: <code>{matchId}</code> • Opponent DID: <code>{peerDid || '-'}</code>
+                Role: <strong>{role}</strong> • Round: <strong>{roundFromMid ?? '-'}</strong> • Opponent: <strong>{peerHandle || shortDid(peerDid)}</strong>
               </div>
               <div style={{
                 marginTop: 10,
@@ -358,19 +373,6 @@ export default function HomePage() {
           )}
           <div style={{ display: 'flex', gap: 12, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
             <button onClick={registerEntrant} style={{ padding: 12 }}>Register</button>
-            <button onClick={connect2P} style={{ padding: 12 }}>Connect 2P (manual)</button>
-            <button onClick={connectWs} style={{ padding: 12 }}>Connect</button>
-            <button onClick={() => setDebug((v)=>!v)} style={{ padding: 12 }}>{debug ? 'Hide debug' : 'Show debug'}</button>
-            <button onClick={async () => {
-              // Demo commit/reveal against match-engine
-              const mid = 'demo-1'; const nonce = Math.random().toString(36).slice(2);
-              const turn = 1; const move = 'R';
-              const cRes = await fetch(`${apiBase}/commit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ match_id: mid, did: session.did, turn, move_: move, nonce }) });
-              const { commit } = await cRes.json();
-              const rRes = await fetch(`${apiBase}/reveal`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ commit, match_id: mid, did: session.did, turn, move_: move, nonce }) });
-              const rj = await rRes.json();
-              alert(`Reveal valid=${rj.valid}`);
-            }} style={{ padding: 12 }}>Commit/Reveal</button>
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
               <span>Turn: <strong>{turn || '-'}</strong></span>
               <span style={{ fontSize: 22 }}>Time left: <strong>{secondsLeft}s</strong></span>

@@ -120,7 +120,8 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
             }
         };
         current_turn = t;
-        let ts_msg = TurnStart { match_id: mid.clone(), turn: t, deadline_ms_epoch: d };
+        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_millis(0)).as_millis() as i64;
+        let ts_msg = TurnStart { match_id: mid.clone(), turn: t, deadline_ms_epoch: d, now_ms_epoch: now_ms };
         if let Ok(txt) = serde_json::to_string(&ServerToClient::TurnStart(ts_msg)) {
             // broadcast via mailbox (includes this client)
             let peers = { MAILBOXES.lock().unwrap().get(&mid).cloned().unwrap_or_default() };
@@ -162,7 +163,8 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                                 .unwrap_or(Duration::from_millis(0))
                                 .as_millis() as i64;
                             let mid = format!("{}_{}", req.tid, req.round);
-                            let turn_start = TurnStart { match_id: mid.clone(), turn: 1, deadline_ms_epoch: deadline };
+                            let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_millis(0)).as_millis() as i64;
+                            let turn_start = TurnStart { match_id: mid.clone(), turn: 1, deadline_ms_epoch: deadline, now_ms_epoch: now_ms };
                             if let Ok(txt) = serde_json::to_string(&ServerToClient::TurnStart(turn_start)) {
                                 let peers = { MAILBOXES.lock().unwrap().get(&mid).cloned().unwrap_or_default() };
                                 for p in peers { let _ = p.send(txt.clone()); }
@@ -276,7 +278,8 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                                 let mut ts_map = TURN_STATE.lock().unwrap();
                                 ts_map.insert(mid_now.clone(), (current_turn, next_deadline));
                             }
-                            let ts = TurnStart { match_id: mid_now.clone(), turn: current_turn, deadline_ms_epoch: next_deadline };
+                            let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_millis(0)).as_millis() as i64;
+                            let ts = TurnStart { match_id: mid_now.clone(), turn: current_turn, deadline_ms_epoch: next_deadline, now_ms_epoch: now_ms };
                             if let Ok(txt_ts) = serde_json::to_string(&ServerToClient::TurnStart(ts)) {
                                 let _ = socket.send(Message::Text(txt_ts.clone())).await;
                                 let peers = { MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default() };
@@ -377,7 +380,8 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                     let mut ts = TURN_STATE.lock().unwrap();
                     ts.insert(mid_now.clone(), (current_turn, next_deadline));
                 }
-                let ts = TurnStart { match_id: mid_now.clone(), turn: current_turn, deadline_ms_epoch: next_deadline };
+                let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_millis(0)).as_millis() as i64;
+                let ts = TurnStart { match_id: mid_now.clone(), turn: current_turn, deadline_ms_epoch: next_deadline, now_ms_epoch: now_ms };
                 if let Ok(txt_ts) = serde_json::to_string(&ServerToClient::TurnStart(ts)) { let _ = socket.send(Message::Text(txt_ts.clone())).await; let peers = { MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default() }; for p in peers { let _ = p.send(txt_ts.clone()); } }
                 // schedule next timeout
                 let tx2 = tx.clone();
