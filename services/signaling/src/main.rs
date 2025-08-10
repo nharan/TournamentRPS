@@ -67,7 +67,23 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
     let (tx, mut rx) = mpsc::unbounded_channel::<InternalEvent>();
     let (relay_tx, mut relay_rx) = mpsc::unbounded_channel::<String>();
     let mut match_id_for_session: Option<String> = Some(mid_from_ticket.clone());
+    // Parse P1/P2 DIDs from match id if present: format like tid-rX-ENC_P1-ENC_P2 where ':' replaced by '_'
+    let (mut p1_did_from_mid, mut p2_did_from_mid): (Option<String>, Option<String>) = (None, None);
+    {
+        let parts: Vec<&str> = mid_from_ticket.rsplitn(3, '-').collect();
+        if parts.len() >= 2 {
+            let p2_enc = parts[0];
+            let p1_enc = parts[1];
+            let p1 = p1_enc.replace('_', ":");
+            let p2 = p2_enc.replace('_', ":");
+            if p1.starts_with("did:") && p2.starts_with("did:") {
+                p1_did_from_mid = Some(p1);
+                p2_did_from_mid = Some(p2);
+            }
+        }
+    }
     let turn_deadline_ms: u64 = std::env::var("TURN_DEADLINE_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(30_000);
+    tracing::info!(%turn_deadline_ms, "turn deadline configured");
     let mut turn_started = false;
 
     // register this connection to the mailbox for this match
@@ -105,7 +121,11 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
         };
         current_turn = t;
         let ts_msg = TurnStart { match_id: mid.clone(), turn: t, deadline_ms_epoch: d };
-        if let Ok(txt) = serde_json::to_string(&ServerToClient::TurnStart(ts_msg)) { let _ = socket.send(Message::Text(txt)).await; }
+        if let Ok(txt) = serde_json::to_string(&ServerToClient::TurnStart(ts_msg)) {
+            // broadcast via mailbox (includes this client)
+            let peers = { MAILBOXES.lock().unwrap().get(&mid).cloned().unwrap_or_default() };
+            for p in peers { let _ = p.send(txt.clone()); }
+        }
     }
     // forward relayed messages to this socket
     // handle socket and relay messages in a single loop to avoid ownership issues
@@ -143,7 +163,10 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                                 .as_millis() as i64;
                             let mid = format!("{}_{}", req.tid, req.round);
                             let turn_start = TurnStart { match_id: mid.clone(), turn: 1, deadline_ms_epoch: deadline };
-                            if let Ok(txt) = serde_json::to_string(&ServerToClient::TurnStart(turn_start)) { let _ = socket.send(Message::Text(txt)).await; }
+                            if let Ok(txt) = serde_json::to_string(&ServerToClient::TurnStart(turn_start)) {
+                                let peers = { MAILBOXES.lock().unwrap().get(&mid).cloned().unwrap_or_default() };
+                                for p in peers { let _ = p.send(txt.clone()); }
+                            }
                             // schedule timeout for turn 1
                             let tx2 = tx.clone();
                             let mid_clone = mid.clone();
@@ -181,7 +204,9 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                         let mut hasher = Sha256::new();
                         hasher.update(rev.move_.as_bytes());
                         hasher.update(rev.nonce.as_bytes());
-                        hasher.update(current_turn.to_be_bytes());
+                        // trust client turn index for consistency across sockets
+                        let turn_idx = if rev.turn == 0 { current_turn } else { rev.turn };
+                        hasher.update(turn_idx.to_be_bytes());
                         hasher.update(rev.match_id.as_bytes());
                         hasher.update(did.as_bytes());
                         let _commit = hasher.finalize().encode_hex::<String>();
@@ -191,14 +216,14 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                         {
                             let mut all = REVEALS.lock().unwrap();
                             let per_turn = all.entry(mid_now.clone()).or_default();
-                            let per_player = per_turn.entry(current_turn).or_default();
+                            let per_player = per_turn.entry(turn_idx).or_default();
                             per_player.insert(did.clone(), user_move);
                         }
                         // Check if opponent has also revealed for this turn
                         let maybe_opp_move: Option<(String, char)> = {
                             let all = REVEALS.lock().unwrap();
                             all.get(&mid_now)
-                                .and_then(|pt| pt.get(&current_turn))
+                                .and_then(|pt| pt.get(&turn_idx))
                                 .and_then(|pp| pp.iter().find(|(k, _)| *k.as_str() != did).map(|(k, &m)| (k.clone(), m)))
                         };
                         if let Some((opp_did, opp)) = maybe_opp_move {
@@ -209,29 +234,37 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                                 if resolved.contains(&key) { false } else { resolved.insert(key); true }
                             };
                             if !need_resolve { continue; }
-                            // Canonical P1/P2 by sorted DIDs
-                            let (p1_did, p2_did) = {
+                            // Canonical P1/P2 by sorted DIDs and fetch moves per DID
+                            let (um, om) = {
                                 let parts = PARTICIPANTS.lock().unwrap();
                                 let mut v: Vec<String> = parts.get(&mid_now).cloned().unwrap_or_default().into_iter().collect();
                                 v.sort();
-                                let p1 = v.get(0).cloned().unwrap_or_default();
-                                let p2 = v.get(1).cloned().unwrap_or_default();
-                                (p1, p2)
+                                let p1d = p1_did_from_mid.clone().unwrap_or_else(|| v.get(0).cloned().unwrap_or_default());
+                                let p2d = p2_did_from_mid.clone().unwrap_or_else(|| v.get(1).cloned().unwrap_or_default());
+                                let revs = REVEALS.lock().unwrap();
+                                let pt = revs.get(&mid_now).and_then(|pt| pt.get(&turn_idx)).cloned().unwrap_or_default();
+                                let m1 = pt.get(&p1d).copied().unwrap_or('R');
+                                let m2 = pt.get(&p2d).copied().unwrap_or('R');
+                                (m1, m2)
                             };
-                            let um = if did == p1_did { user_move } else { opp };
-                            let om = if did == p1_did { opp } else { user_move };
                             let beats = |a: char, b: char| match (a, b) { ('R','S')|('S','P')|('P','R') => true, _ => false };
                             let winner = if um == om { "DRAW" } else if beats(um, om) { "P1" } else { "P2" };
                             if winner == "P1" { p1_score += 1; } else if winner == "P2" { p2_score += 1; }
                             // Broadcast one canonical result to all peers
                             let tr_all = TurnResult { match_id: mid_now.clone(), turn: current_turn, result: winner.into(), ai: Some(false), ai_for_dids: Some(vec![]), p1_move: Some(um.to_string()), p2_move: Some(om.to_string()) };
                             if let Ok(txt_all) = serde_json::to_string(&ServerToClient::TurnResult(tr_all)) {
-                                let _ = socket.send(Message::Text(txt_all.clone())).await;
+                                // broadcast via mailbox only (avoid duplicate send to this socket)
                                 let peers = MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default();
                                 for p in peers { let _ = p.send(txt_all.clone()); }
                             }
+                            // mark this turn resolved to prevent timeout fallback
+                            {
+                                let mut resolved = TURN_RESOLVED.lock().unwrap();
+                                let key = format!("{}#{}", mid_now, current_turn);
+                                resolved.insert(key);
+                            }
                             // Next turn start for both
-                            current_turn += 1;
+                            current_turn = turn_idx + 1;
                             let next_deadline = SystemTime::now()
                                 .checked_add(Duration::from_millis(turn_deadline_ms))
                                 .unwrap_or(SystemTime::now())
@@ -243,7 +276,7 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                                 ts_map.insert(mid_now.clone(), (current_turn, next_deadline));
                             }
                             let ts = TurnStart { match_id: mid_now.clone(), turn: current_turn, deadline_ms_epoch: next_deadline };
-                            if let Ok(txt_ts) = serde_json::to_string(&ServerToClient::TurnStart(ts)) { let _ = socket.send(Message::Text(txt_ts.clone())).await; let peers = { MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default() }; for p in peers { let _ = p.send(txt_ts.clone()); } }
+                            if let Ok(txt_ts) = serde_json::to_string(&ServerToClient::TurnStart(ts)) { let peers = { MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default() }; for p in peers { let _ = p.send(txt_ts.clone()); } }
                             // schedule next turn timeout always
                             let tx2 = tx.clone();
                             let mid_clone = mid_now.clone();
@@ -290,29 +323,28 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                 };
                 if already_resolved { continue; }
 
-                // Determine missing reveals for known participants and substitute per missing DID
-                let (user_move, opp_move, missing_dids, opp_did) = {
+                // Determine missing reveals canonically and substitute per missing DID
+                let (p1_move_c, p2_move_c, missing_dids) = {
                     let reveals = REVEALS.lock().unwrap();
                     let per_turn = reveals.get(&mid_now).and_then(|pt| pt.get(&current_turn));
                     let parts = PARTICIPANTS.lock().unwrap();
-                    let set = parts.get(&mid_now).cloned().unwrap_or_default();
-                    let opp_did = set.iter().find(|d2| *d2 != &did).cloned().unwrap_or_else(|| "PEER".to_string());
-                    let mut missing: Vec<String> = Vec::new();
+                    let mut ids: Vec<String> = parts.get(&mid_now).cloned().unwrap_or_default().into_iter().collect();
+                    ids.sort();
+                    let p1d = p1_did_from_mid.clone().unwrap_or_else(|| ids.get(0).cloned().unwrap_or_default());
+                    let p2d = p2_did_from_mid.clone().unwrap_or_else(|| ids.get(1).cloned().unwrap_or_default());
                     let rand = |seed: u64| -> char { match seed % 3 { 0 => 'R', 1 => 'P', _ => 'S' } };
                     let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_millis(0)).as_millis() as u64;
-                    let um = per_turn.and_then(|pp| pp.get(&did)).copied().unwrap_or_else(|| { missing.push(did.clone()); rand(now_ms ^ 0x1111) });
-                    let om = per_turn.and_then(|pp| pp.get(&opp_did)).copied().unwrap_or_else(|| { missing.push(opp_did.clone()); rand(now_ms ^ 0x2222) });
-                    (um, om, missing, opp_did)
+                    let mut miss: Vec<String> = Vec::new();
+                    let m1 = per_turn.and_then(|pp| pp.get(&p1d)).copied().unwrap_or_else(|| { miss.push(p1d.clone()); rand(now_ms ^ 0x1111) });
+                    let m2 = per_turn.and_then(|pp| pp.get(&p2d)).copied().unwrap_or_else(|| { miss.push(p2d.clone()); rand(now_ms ^ 0x2222) });
+                    (m1, m2, miss)
                 };
-                // Compute winner from this user's perspective and broadcast mirrored
+                // Score canonically
                 let beats = |a: char, b: char| match (a, b) { ('R','S')|('S','P')|('P','R') => true, _ => false };
-                let winner_user = if user_move == opp_move { "DRAW" } else if beats(user_move, opp_move) { "P1" } else { "P2" };
-                if winner_user == "P1" { p1_score += 1; } else if winner_user == "P2" { p2_score += 1; }
-                let tr_user = TurnResult { match_id: mid_now.clone(), turn: current_turn, result: winner_user.into(), ai: Some(missing_dids.iter().any(|d| d == &did)), ai_for_dids: Some(missing_dids.clone()), p1_move: Some(user_move.to_string()), p2_move: Some(opp_move.to_string()) };
-                if let Ok(txtu) = serde_json::to_string(&ServerToClient::TurnResult(tr_user)) { let _ = socket.send(Message::Text(txtu)).await; }
-                let winner_peer = match winner_user { "P1" => "P2", "P2" => "P1", _ => "DRAW" };
-                let tr_peer = TurnResult { match_id: mid_now.clone(), turn: current_turn, result: winner_peer.into(), ai: Some(missing_dids.iter().any(|d| d == &opp_did)), ai_for_dids: Some(missing_dids.clone()), p1_move: Some(user_move.to_string()), p2_move: Some(opp_move.to_string()) };
-                if let Ok(txtp) = serde_json::to_string(&ServerToClient::TurnResult(tr_peer)) { let peers = { MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default() }; for p in peers { let _ = p.send(txtp.clone()); } }
+                let winner = if p1_move_c == p2_move_c { "DRAW" } else if beats(p1_move_c, p2_move_c) { "P1" } else { "P2" };
+                if winner == "P1" { p1_score += 1; } else if winner == "P2" { p2_score += 1; }
+                let tr_all = TurnResult { match_id: mid_now.clone(), turn: current_turn, result: winner.into(), ai: Some(!missing_dids.is_empty()), ai_for_dids: Some(missing_dids.clone()), p1_move: Some(p1_move_c.to_string()), p2_move: Some(p2_move_c.to_string()) };
+                if let Ok(txt_all) = serde_json::to_string(&ServerToClient::TurnResult(tr_all)) { let peers = { MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default() }; for p in peers { let _ = p.send(txt_all.clone()); } }
                 {
                     let mut resolved = TURN_RESOLVED.lock().unwrap();
                     let key = format!("{}#{}", mid_now, current_turn);

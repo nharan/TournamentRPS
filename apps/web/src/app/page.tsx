@@ -25,6 +25,7 @@ export default function HomePage() {
   const [events, setEvents] = useState<any[]>([]);
   const [sentByTurn, setSentByTurn] = useState<Record<number, { move: 'R'|'P'|'S'; at: number }>>({});
   const [turnsTable, setTurnsTable] = useState<Array<{ turn: number; you: 'R'|'P'|'S'|'-'; opp: 'R'|'P'|'S'|'-'; result: 'WIN'|'LOSE'|'DRAW'; timeout: 'YOU'|'OPP'|'NONE' }>>([]);
+  const [processed, setProcessed] = useState<Record<number, boolean>>({});
 
   const MoveChip = ({ move, align = 'left' as 'left'|'right' }) => {
     const label = (move || '-') as 'R'|'P'|'S'|'-';
@@ -43,6 +44,10 @@ export default function HomePage() {
   const apiBase = process.env.NEXT_PUBLIC_MATCH_ENGINE_HTTP || 'http://localhost:8083';
   const coordBase = process.env.NEXT_PUBLIC_COORDINATOR_HTTP || 'http://localhost:8082';
   const wsBase = (process.env.NEXT_PUBLIC_SIGNALING_WS || 'ws://localhost:8081/ws');
+  const shouldAudit = (msg: any) => {
+    const t = msg?.type;
+    return t === 'TURN_START' || t === 'TURN_RESULT' || t === 'MATCH_RESULT' || t === 'ERROR';
+  };
 
   // countdown ticker (useEffect so it actually runs)
   useEffect(() => {
@@ -97,15 +102,16 @@ export default function HomePage() {
       };
       socket.onmessage = (ev) => {
         const msgText = String(ev.data);
-        setLog((prev) => [msgText, ...prev].slice(0, 50));
         try {
           const msg = JSON.parse(msgText);
+          if (shouldAudit(msg)) setLog((prev) => [msgText, ...prev].slice(0, 50));
           if (msg.type === 'SDP_OFFER' || msg.type === 'SDP_ANSWER' || msg.type === 'ICE') {
             // handled in 2P flow only
             return;
           }
           if (msg.type === 'ASSIGN') {
             setMatchId(msg.match_id);
+            if (msg.role) setRole(msg.role);
           } else if (msg.type === 'TURN_START') {
             setTurn(msg.turn ?? 0);
             if (msg.match_id) setMatchId(msg.match_id);
@@ -122,7 +128,9 @@ export default function HomePage() {
             else if (msg.result === 'P1') setLastResult('You won this turn');
             else setLastResult('Opponent won this turn');
           }
-        } catch {}
+        } catch {
+          // non-JSON: ignore
+        }
       };
       socket.onclose = () => setWs(null);
       setWs(socket);
@@ -136,8 +144,8 @@ export default function HomePage() {
   const registerEntrant = async () => {
     if (!session) return;
     const res = await fetch(`${coordBase}/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tid: 'demo', did: session.did }) });
-    if (!res.ok) { alert('Register failed'); return; }
-    alert('Registered. Waiting for round start...');
+    if (!res.ok) { setLog(prev => ["register failed", ...prev]); return; }
+    setLog(prev => ["registered", ...prev]);
     pollAssignment();
   };
 
@@ -157,6 +165,7 @@ export default function HomePage() {
 
   const connectWithAssignment = async (assign: any) => {
     setMatchId(assign.match_id); setRole(assign.role); setPeerDid(assign?.peer?.did || null);
+    const myRole: 'P1'|'P2' = assign.role;
     const url = `${wsBase}?ticket=${encodeURIComponent(assign.ticket)}`;
     const socket = new WebSocket(url);
     socket.onopen = async () => {
@@ -175,16 +184,17 @@ export default function HomePage() {
       try {
         const msg = JSON.parse(txt);
         setEvents((prev) => [{ t: Date.now(), msg }, ...prev].slice(0, 100));
+        if (shouldAudit(msg)) setLog((prev) => [txt, ...prev].slice(0, 50));
         // P2P signaling
         if (pc) {
-          if (msg.type === 'SDP_OFFER' && msg.match_id === assign.match_id && assign.role === 'P2') {
+          if (msg.type === 'SDP_OFFER' && msg.match_id === assign.match_id && myRole === 'P2') {
             const desc = new RTCSessionDescription(JSON.parse(msg.sdp));
             await pc.setRemoteDescription(desc);
             const ans = await pc.createAnswer(); await pc.setLocalDescription(ans);
             socket.send(JSON.stringify({ type: 'SDP_ANSWER', match_id: assign.match_id, sdp: JSON.stringify(ans) }));
             return;
           }
-          if (msg.type === 'SDP_ANSWER' && msg.match_id === assign.match_id && assign.role === 'P1') {
+          if (msg.type === 'SDP_ANSWER' && msg.match_id === assign.match_id && myRole === 'P1') {
             const desc = new RTCSessionDescription(JSON.parse(msg.sdp));
             await pc.setRemoteDescription(desc);
             return;
@@ -207,23 +217,28 @@ export default function HomePage() {
           setDeadline(null);
         } else if (msg.type === 'TURN_RESULT') {
           const whoWon = msg.result as 'P1'|'P2'|'DRAW';
+          // de-dup: ignore if we've already processed this turn for this match
+          if (processed[msg.turn]) {
+            return;
+          }
+          setProcessed(prev => ({ ...prev, [msg.turn]: true }));
           if (whoWon !== 'DRAW') {
-            const youWon = role && whoWon === role;
+            const youWon = whoWon === myRole;
             if (youWon) setP1Score((s) => s + 1); else setP2Score((s) => s + 1);
           }
           setDeadline(null);
           if (whoWon === 'DRAW') setLastResult('Draw');
-          else if ((role === 'P1' && whoWon === 'P1') || (role === 'P2' && whoWon === 'P2')) setLastResult('You won this turn');
+          else if ((myRole === 'P1' && whoWon === 'P1') || (myRole === 'P2' && whoWon === 'P2')) setLastResult('You won this turn');
           else setLastResult('Opponent won this turn');
 
           // Build a human log row
           const p1m = (msg.p1_move as string | undefined)?.toUpperCase?.() as 'R'|'P'|'S'|undefined;
           const p2m = (msg.p2_move as string | undefined)?.toUpperCase?.() as 'R'|'P'|'S'|undefined;
-          const youMove = role === 'P1' ? (p1m || (sentByTurn[msg.turn]?.move ?? '-')) : (p2m || (sentByTurn[msg.turn]?.move ?? '-'));
-          const oppMove = role === 'P1' ? (p2m ?? '-') : (p1m ?? '-');
+          const youMove = myRole === 'P1' ? (p1m || (sentByTurn[msg.turn]?.move ?? '-')) : (p2m || (sentByTurn[msg.turn]?.move ?? '-'));
+          const oppMove = myRole === 'P1' ? (p2m ?? '-') : (p1m ?? '-');
           let result: 'WIN'|'LOSE'|'DRAW' = 'DRAW';
           if (whoWon !== 'DRAW') {
-            const youWon = (role === 'P1' && whoWon === 'P1') || (role === 'P2' && whoWon === 'P2');
+            const youWon = (myRole === 'P1' && whoWon === 'P1') || (myRole === 'P2' && whoWon === 'P2');
             result = youWon ? 'WIN' : 'LOSE';
           }
           const aiFor: string[] = Array.isArray(msg.ai_for_dids) ? msg.ai_for_dids as string[] : [];
@@ -237,8 +252,9 @@ export default function HomePage() {
             return [...withoutDup, { turn: msg.turn ?? 0, you: youMove || '-', opp: oppMove || '-', result, timeout }].sort((a,b)=>a.turn-b.turn);
           });
         }
-      } catch {}
-      setLog((prev) => [txt, ...prev].slice(0, 50));
+      } catch {
+        // ignore non-JSON
+      }
     };
     socket.onclose = () => setWs(null);
     setWs(socket);
@@ -297,7 +313,6 @@ export default function HomePage() {
             <button onClick={registerEntrant} style={{ padding: 12 }}>Register</button>
             <button onClick={connect2P} style={{ padding: 12 }}>Connect 2P (manual)</button>
             <button onClick={connectWs} style={{ padding: 12 }}>Connect</button>
-            <button onClick={() => { setMatchId(null); setTurn(0); setP1Score(0); setP2Score(0); setDeadline(null); setSecondsLeft(0); setLastResult(''); setLastMove(null); ws?.close(); setWs(null); setTimeout(connectWs, 100); }} style={{ padding: 12 }}>New match</button>
             <button onClick={() => setDebug((v)=>!v)} style={{ padding: 12 }}>{debug ? 'Hide debug' : 'Show debug'}</button>
             <button onClick={async () => {
               // Demo commit/reveal against match-engine
