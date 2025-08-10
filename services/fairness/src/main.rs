@@ -2,7 +2,7 @@ use axum::{routing::{get, post}, Router, Json};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use serde::{Deserialize, Serialize};
-use rand::{Rng, SeedableRng};
+use rand::{RngCore, SeedableRng};
 use rand::rngs::StdRng;
 
 #[tokio::main]
@@ -27,9 +27,10 @@ struct AiMoveReq { match_id: String, turn: u32 }
 struct AiMoveResp { rps: char, vrfOutput: String, vrfProof: String, drandEpoch: u64 }
 
 async fn ai_move(Json(req): Json<AiMoveReq>) -> Json<AiMoveResp> {
+    // sample uniformly R/P/S from seeded RNG so it is not always 'R'
     let seed = fxhash::hash64(format!("{}:{}", req.match_id, req.turn).as_bytes());
     let mut rng: StdRng = SeedableRng::seed_from_u64(seed);
-    let moves = ['R', 'P', 'S'];
-    let rps = moves[(rng.gen::<u32>() % 3) as usize];
+    let idx = (rng.next_u32() % 3) as usize;
+    let rps = ['R','P','S'][idx];
     Json(AiMoveResp { rps, vrfOutput: "0x00".into(), vrfProof: "0x00".into(), drandEpoch: 0 })
 }

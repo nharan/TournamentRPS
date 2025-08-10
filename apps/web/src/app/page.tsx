@@ -1,5 +1,5 @@
 'use client';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { BskyAgent } from '@atproto/api';
 
 export default function HomePage() {
@@ -20,8 +20,8 @@ export default function HomePage() {
   const agent = useMemo(() => new BskyAgent({ service: `${process.env.NEXT_PUBLIC_ATPROTO_PDS_URL || 'https://bsky.social'}` }), []);
   const apiBase = process.env.NEXT_PUBLIC_MATCH_ENGINE_HTTP || 'http://localhost:8083';
 
-  // countdown ticker
-  useMemo(() => {
+  // countdown ticker (useEffect so it actually runs)
+  useEffect(() => {
     const t = setInterval(() => {
       if (!deadline) { setSecondsLeft(0); return; }
       const s = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
@@ -149,7 +149,7 @@ export default function HomePage() {
             }} style={{ padding: 12 }}>Commit/Reveal</button>
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
               <span>Turn: <strong>{turn || '-'}</strong></span>
-              <span>Time left: <strong>{secondsLeft}s</strong></span>
+              <span style={{ fontSize: 22 }}>Time left: <strong>{secondsLeft}s</strong></span>
               <span>Score: <strong>You {p1Score} – {p2Score} Opp</strong></span>
               <button disabled={!ws || !matchId || !turn} onClick={() => sendReveal('R')} style={{ padding: 16, fontSize: 16 }}>Rock</button>
               <button disabled={!ws || !matchId || !turn} onClick={() => sendReveal('P')} style={{ padding: 16, fontSize: 16 }}>Paper</button>
