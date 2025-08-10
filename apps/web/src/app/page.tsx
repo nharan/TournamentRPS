@@ -17,8 +17,32 @@ export default function HomePage() {
   const [secondsLeft, setSecondsLeft] = useState<number>(0);
   const [lastResult, setLastResult] = useState<string>('');
   const [lastMove, setLastMove] = useState<'R'|'P'|'S'|null>(null);
+  const [pc, setPc] = useState<RTCPeerConnection | null>(null);
+  const [dc, setDc] = useState<RTCDataChannel | null>(null);
+  const [role, setRole] = useState<'P1'|'P2'|null>(null);
+  const [peerDid, setPeerDid] = useState<string | null>(null);
+  const [debug, setDebug] = useState<boolean>(false);
+  const [events, setEvents] = useState<any[]>([]);
+  const [sentByTurn, setSentByTurn] = useState<Record<number, { move: 'R'|'P'|'S'; at: number }>>({});
+  const [turnsTable, setTurnsTable] = useState<Array<{ turn: number; you: 'R'|'P'|'S'|'-'; opp: 'R'|'P'|'S'|'-'; result: 'WIN'|'LOSE'|'DRAW'; timeout: 'YOU'|'OPP'|'NONE' }>>([]);
+
+  const MoveChip = ({ move, align = 'left' as 'left'|'right' }) => {
+    const label = (move || '-') as 'R'|'P'|'S'|'-';
+    const bg = label === 'R' ? '#2b1d1d' : label === 'P' ? '#1d2431' : label === 'S' ? '#2b2a1d' : '#1f1f1f';
+    const fg = label === 'R' ? '#ff7878' : label === 'P' ? '#7fb2ff' : label === 'S' ? '#f6d06d' : '#aaa';
+    return (
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: 34, height: 28, padding: '2px 6px', borderRadius: 8,
+        background: bg, color: fg, fontWeight: 700, fontFamily: 'monospace',
+        marginLeft: align === 'right' ? 'auto' : 0
+      }}>{label}</span>
+    );
+  };
   const agent = useMemo(() => new BskyAgent({ service: `${process.env.NEXT_PUBLIC_ATPROTO_PDS_URL || 'https://bsky.social'}` }), []);
   const apiBase = process.env.NEXT_PUBLIC_MATCH_ENGINE_HTTP || 'http://localhost:8083';
+  const coordBase = process.env.NEXT_PUBLIC_COORDINATOR_HTTP || 'http://localhost:8082';
+  const wsBase = (process.env.NEXT_PUBLIC_SIGNALING_WS || 'ws://localhost:8081/ws');
 
   // countdown ticker (useEffect so it actually runs)
   useEffect(() => {
@@ -54,7 +78,6 @@ export default function HomePage() {
   const connectWs = async () => {
     if (ws || !session) return;
     try {
-      const coordBase = process.env.NEXT_PUBLIC_COORDINATOR_HTTP || 'http://localhost:8082';
       const rr = await fetch(`${coordBase}/ready_for_round`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -67,7 +90,6 @@ export default function HomePage() {
         return;
       }
       const { ticket } = await rr.json();
-      const wsBase = (process.env.NEXT_PUBLIC_SIGNALING_WS || 'ws://localhost:8081/ws');
       const url = `${wsBase}?ticket=${encodeURIComponent(ticket)}`;
       const socket = new WebSocket(url);
       socket.onopen = () => {
@@ -78,6 +100,10 @@ export default function HomePage() {
         setLog((prev) => [msgText, ...prev].slice(0, 50));
         try {
           const msg = JSON.parse(msgText);
+          if (msg.type === 'SDP_OFFER' || msg.type === 'SDP_ANSWER' || msg.type === 'ICE') {
+            // handled in 2P flow only
+            return;
+          }
           if (msg.type === 'ASSIGN') {
             setMatchId(msg.match_id);
           } else if (msg.type === 'TURN_START') {
@@ -106,12 +132,141 @@ export default function HomePage() {
     }
   };
 
+  // Registration and auto-pairing
+  const registerEntrant = async () => {
+    if (!session) return;
+    const res = await fetch(`${coordBase}/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tid: 'demo', did: session.did }) });
+    if (!res.ok) { alert('Register failed'); return; }
+    alert('Registered. Waiting for round start...');
+    pollAssignment();
+  };
+
+  const pollAssignment = async () => {
+    if (!session) return;
+    for (let i = 0; i < 120; i++) {
+      const r = await fetch(`${coordBase}/assignment?tid=demo&did=${encodeURIComponent(session.did)}`);
+      const j = await r.json();
+      if (j.status === 'ASSIGN') {
+        await connectWithAssignment(j);
+        return;
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    setLog((prev) => ['assignment timeout', ...prev]);
+  };
+
+  const connectWithAssignment = async (assign: any) => {
+    setMatchId(assign.match_id); setRole(assign.role); setPeerDid(assign?.peer?.did || null);
+    const url = `${wsBase}?ticket=${encodeURIComponent(assign.ticket)}`;
+    const socket = new WebSocket(url);
+    socket.onopen = async () => {
+      const peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      peer.onicecandidate = (e) => { if (e.candidate) socket.send(JSON.stringify({ type: 'ICE', match_id: assign.match_id, candidate: JSON.stringify(e.candidate) })); };
+      peer.ondatachannel = (e) => setDc(e.channel);
+      setPc(peer);
+      if (assign.role === 'P1') {
+        const channel = peer.createDataChannel('rps'); setDc(channel);
+        const offer = await peer.createOffer(); await peer.setLocalDescription(offer);
+        socket.send(JSON.stringify({ type: 'SDP_OFFER', match_id: assign.match_id, sdp: JSON.stringify(offer) }));
+      }
+    };
+    socket.onmessage = async (ev) => {
+      const txt = String(ev.data);
+      try {
+        const msg = JSON.parse(txt);
+        setEvents((prev) => [{ t: Date.now(), msg }, ...prev].slice(0, 100));
+        // P2P signaling
+        if (pc) {
+          if (msg.type === 'SDP_OFFER' && msg.match_id === assign.match_id && assign.role === 'P2') {
+            const desc = new RTCSessionDescription(JSON.parse(msg.sdp));
+            await pc.setRemoteDescription(desc);
+            const ans = await pc.createAnswer(); await pc.setLocalDescription(ans);
+            socket.send(JSON.stringify({ type: 'SDP_ANSWER', match_id: assign.match_id, sdp: JSON.stringify(ans) }));
+            return;
+          }
+          if (msg.type === 'SDP_ANSWER' && msg.match_id === assign.match_id && assign.role === 'P1') {
+            const desc = new RTCSessionDescription(JSON.parse(msg.sdp));
+            await pc.setRemoteDescription(desc);
+            return;
+          }
+          if (msg.type === 'ICE' && msg.match_id === assign.match_id) {
+            const cand = new RTCIceCandidate(JSON.parse(msg.candidate));
+            await pc.addIceCandidate(cand);
+            return;
+          }
+        }
+        // Game messages
+        if (msg.type === 'ASSIGN') {
+          setMatchId(msg.match_id);
+        } else if (msg.type === 'TURN_START') {
+          setTurn(msg.turn ?? 0);
+          if (msg.match_id) setMatchId(msg.match_id);
+          if (msg.deadline_ms_epoch) setDeadline(Number(msg.deadline_ms_epoch));
+        } else if (msg.type === 'MATCH_RESULT') {
+          setTurn(0);
+          setDeadline(null);
+        } else if (msg.type === 'TURN_RESULT') {
+          const whoWon = msg.result as 'P1'|'P2'|'DRAW';
+          if (whoWon !== 'DRAW') {
+            const youWon = role && whoWon === role;
+            if (youWon) setP1Score((s) => s + 1); else setP2Score((s) => s + 1);
+          }
+          setDeadline(null);
+          if (whoWon === 'DRAW') setLastResult('Draw');
+          else if ((role === 'P1' && whoWon === 'P1') || (role === 'P2' && whoWon === 'P2')) setLastResult('You won this turn');
+          else setLastResult('Opponent won this turn');
+
+          // Build a human log row
+          const p1m = (msg.p1_move as string | undefined)?.toUpperCase?.() as 'R'|'P'|'S'|undefined;
+          const p2m = (msg.p2_move as string | undefined)?.toUpperCase?.() as 'R'|'P'|'S'|undefined;
+          const youMove = role === 'P1' ? (p1m || (sentByTurn[msg.turn]?.move ?? '-')) : (p2m || (sentByTurn[msg.turn]?.move ?? '-'));
+          const oppMove = role === 'P1' ? (p2m ?? '-') : (p1m ?? '-');
+          let result: 'WIN'|'LOSE'|'DRAW' = 'DRAW';
+          if (whoWon !== 'DRAW') {
+            const youWon = (role === 'P1' && whoWon === 'P1') || (role === 'P2' && whoWon === 'P2');
+            result = youWon ? 'WIN' : 'LOSE';
+          }
+          const aiFor: string[] = Array.isArray(msg.ai_for_dids) ? msg.ai_for_dids as string[] : [];
+          let timeout: 'YOU'|'OPP'|'NONE' = 'NONE';
+          if (session) {
+            if (aiFor.includes(session.did)) timeout = 'YOU';
+            else if (peerDid && aiFor.includes(peerDid)) timeout = 'OPP';
+          }
+          setTurnsTable((prev) => {
+            const withoutDup = prev.filter((r) => r.turn !== msg.turn);
+            return [...withoutDup, { turn: msg.turn ?? 0, you: youMove || '-', opp: oppMove || '-', result, timeout }].sort((a,b)=>a.turn-b.turn);
+          });
+        }
+      } catch {}
+      setLog((prev) => [txt, ...prev].slice(0, 50));
+    };
+    socket.onclose = () => setWs(null);
+    setWs(socket);
+  };
+
+  // 2P: Connect via coordinator queue and establish WebRTC DataChannel
+  const connect2P = async () => {
+    if (ws || !session) return;
+    const coordBase = process.env.NEXT_PUBLIC_COORDINATOR_HTTP || 'http://localhost:8082';
+    // poll queue until ASSIGN
+    let assign: any = null;
+    for (let i = 0; i < 20; i++) {
+      const res = await fetch(`${coordBase}/queue_ready`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tid: 'demo', did: session.did }) });
+      const j = await res.json();
+      if (j.status === 'ASSIGN') { assign = j; break; }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    if (!assign) { alert('Queue timeout'); return; }
+    await connectWithAssignment(assign);
+  };
+
   const sendReveal = async (move: 'R' | 'P' | 'S') => {
     if (!ws || !matchId || !turn) return;
     const nonce = Math.random().toString(36).slice(2);
     const payload = { type: 'REVEAL', match_id: matchId, turn, move_: move, nonce };
     ws.send(JSON.stringify(payload));
     setLastMove(move);
+    setSentByTurn((prev) => ({ ...prev, [turn]: { move, at: Date.now() } }));
   };
 
   return (
@@ -127,16 +282,23 @@ export default function HomePage() {
             <label htmlFor="apppw">App Password (not your main password)</label>
             <input id="apppw" type="password" placeholder="xxxx-xxxx-xxxx-xxxx" value={pwInput} onChange={e => setPwInput(e.target.value)} style={{ padding: 10, minWidth: 240 }} />
           </div>
-          <button onClick={signIn} style={{ padding: 12 }}>Sign in with Bluesky</button>
+        <button onClick={signIn} style={{ padding: 12 }}>Sign in with Bluesky</button>
           {authErr && <div style={{ color: 'tomato', width: '100%' }}>{authErr}</div>}
         </div>
       ) : (
         <div>
           <div>Signed in as: <strong>{session.handle}</strong> ({session.did})</div>
+          {role && (
+            <div style={{ marginTop: 6, fontSize: 14, opacity: 0.85 }}>
+              Role: <strong>{role}</strong> • Match: <code>{matchId}</code> • Peer: <code>{peerDid || '-'}</code>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 12, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button style={{ padding: 12 }}>Register</button>
+            <button onClick={registerEntrant} style={{ padding: 12 }}>Register</button>
+            <button onClick={connect2P} style={{ padding: 12 }}>Connect 2P (manual)</button>
             <button onClick={connectWs} style={{ padding: 12 }}>Connect</button>
             <button onClick={() => { setMatchId(null); setTurn(0); setP1Score(0); setP2Score(0); setDeadline(null); setSecondsLeft(0); setLastResult(''); setLastMove(null); ws?.close(); setWs(null); setTimeout(connectWs, 100); }} style={{ padding: 12 }}>New match</button>
+            <button onClick={() => setDebug((v)=>!v)} style={{ padding: 12 }}>{debug ? 'Hide debug' : 'Show debug'}</button>
             <button onClick={async () => {
               // Demo commit/reveal against match-engine
               const mid = 'demo-1'; const nonce = Math.random().toString(36).slice(2);
@@ -160,6 +322,54 @@ export default function HomePage() {
                 </span>
               )}
             </div>
+            {/* Turns table - NYT-inspired lightweight layout */}
+            {!!turnsTable.length && (
+              <div style={{ marginTop: 16 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 10, alignItems: 'center', marginBottom: 6 }}>
+                  <div style={{ fontWeight: 700, opacity: 0.9 }}>YOU</div>
+                  <div style={{ textAlign: 'center', fontWeight: 700, opacity: 0.9 }}>ROUND LOG</div>
+                  <div style={{ textAlign: 'right', fontWeight: 700, opacity: 0.9 }}>OPP</div>
+                </div>
+                {turnsTable.map((row) => {
+                  const icon = row.result === 'WIN' ? '✓' : row.result === 'LOSE' ? '✕' : '≡';
+                  const color = row.result === 'WIN' ? '#66d17a' : row.result === 'LOSE' ? '#e57373' : '#f6c453';
+                  const timeoutText = row.timeout === 'NONE' ? '' : row.timeout === 'YOU' ? 'timeout: you' : 'timeout: opponent';
+                  return (
+                    <div key={`row-${row.turn}`} style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 10, alignItems: 'center', marginBottom: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <MoveChip move={row.you} />
+                      </div>
+                      <div style={{ textAlign: 'center' }}>
+                        <div style={{ fontFamily: 'monospace' }}>Round {row.turn}</div>
+                        <div style={{ fontSize: 20, color }}>{icon}</div>
+                        {!!timeoutText && <div style={{ fontSize: 12, opacity: 0.75 }}>{timeoutText}</div>}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'flex-end' }}>
+                        <MoveChip move={row.opp} align="right" />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {debug && (
+              <div style={{ marginTop: 10, padding: 10, background: '#1b1b1b', color: '#ddd', borderRadius: 6 }}>
+                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                  <span>Sent this turn: {sentByTurn[turn]?.move || '-'}</span>
+                  <span>Deadline: {deadline ? new Date(deadline).toLocaleTimeString() : '-'}</span>
+                </div>
+                <div style={{ marginTop: 8, fontSize: 13 }}>
+                  Last 10 messages:
+                  <ul style={{ margin: '6px 0 0 16px' }}>
+                    {events.slice(0, 10).map((e, i) => (
+                      <li key={i}>
+                        <code>{new Date(e.t).toLocaleTimeString()} {e.msg.type} {e.msg.turn ?? ''} {e.msg.result ?? ''} {Array.isArray(e.msg.ai_for_dids) ? `ai_for_dids=${e.msg.ai_for_dids.join(',')}` : ''}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

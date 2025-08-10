@@ -18,7 +18,18 @@ pub struct RtcConfig { pub turns: Vec<String> }
 pub struct TurnStart { pub match_id: String, pub turn: u32, pub deadline_ms_epoch: i64 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TurnResult { pub match_id: String, pub turn: u32, pub result: String, pub ai: Option<bool> }
+pub struct TurnResult {
+  pub match_id: String,
+  pub turn: u32,
+  pub result: String,
+  // retained for backward-compat with older clients
+  pub ai: Option<bool>,
+  // which player(s) were AI-substituted this turn (DIDs). Empty or None means no substitution.
+  pub ai_for_dids: Option<Vec<String>>,
+  // optional: canonical moves by role
+  pub p1_move: Option<String>,
+  pub p2_move: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchResult { pub match_id: String, pub winner: String }
