@@ -21,11 +21,13 @@ export default function HomePage() {
   const [dc, setDc] = useState<RTCDataChannel | null>(null);
   const [role, setRole] = useState<'P1'|'P2'|null>(null);
   const [peerDid, setPeerDid] = useState<string | null>(null);
+  const [peerHandle, setPeerHandle] = useState<string | null>(null);
   const [debug, setDebug] = useState<boolean>(false);
   const [events, setEvents] = useState<any[]>([]);
   const [sentByTurn, setSentByTurn] = useState<Record<number, { move: 'R'|'P'|'S'; at: number }>>({});
   const [turnsTable, setTurnsTable] = useState<Array<{ turn: number; you: 'R'|'P'|'S'|'-'; opp: 'R'|'P'|'S'|'-'; result: 'WIN'|'LOSE'|'DRAW'; timeout: 'YOU'|'OPP'|'NONE' }>>([]);
   const [processed, setProcessed] = useState<Record<number, boolean>>({});
+  const [auditSeen, setAuditSeen] = useState<Record<string, boolean>>({});
 
   const MoveChip = ({ move, align = 'left' as 'left'|'right' }) => {
     const label = (move || '-') as 'R'|'P'|'S'|'-';
@@ -104,7 +106,16 @@ export default function HomePage() {
         const msgText = String(ev.data);
         try {
           const msg = JSON.parse(msgText);
-          if (shouldAudit(msg)) setLog((prev) => [msgText, ...prev].slice(0, 50));
+          if (shouldAudit(msg)) {
+            const key = msg.type === 'MATCH_RESULT'
+              ? `${msg.type}#${msg.match_id}`
+              : `${msg.type}#${msg.match_id || ''}#${msg.turn || ''}`;
+            setAuditSeen((seen) => {
+              if (seen[key]) return seen;
+              setLog((prev) => [msgText, ...prev].slice(0, 50));
+              return { ...seen, [key]: true };
+            });
+          }
           if (msg.type === 'SDP_OFFER' || msg.type === 'SDP_ANSWER' || msg.type === 'ICE') {
             // handled in 2P flow only
             return;
@@ -112,6 +123,10 @@ export default function HomePage() {
           if (msg.type === 'ASSIGN') {
             setMatchId(msg.match_id);
             if (msg.role) setRole(msg.role);
+            if (msg.peer && typeof msg.peer === 'object') {
+              if (msg.peer.did) setPeerDid(msg.peer.did);
+              if (msg.peer.handle) setPeerHandle(msg.peer.handle);
+            }
           } else if (msg.type === 'TURN_START') {
             setTurn(msg.turn ?? 0);
             if (msg.match_id) setMatchId(msg.match_id);
@@ -143,7 +158,7 @@ export default function HomePage() {
   // Registration and auto-pairing
   const registerEntrant = async () => {
     if (!session) return;
-    const res = await fetch(`${coordBase}/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tid: 'demo', did: session.did }) });
+    const res = await fetch(`${coordBase}/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tid: 'demo', did: session.did, handle: session.handle }) });
     if (!res.ok) { setLog(prev => ["register failed", ...prev]); return; }
     setLog(prev => ["registered", ...prev]);
     pollAssignment();
@@ -164,7 +179,7 @@ export default function HomePage() {
   };
 
   const connectWithAssignment = async (assign: any) => {
-    setMatchId(assign.match_id); setRole(assign.role); setPeerDid(assign?.peer?.did || null);
+    setMatchId(assign.match_id); setRole(assign.role); setPeerDid(assign?.peer?.did || null); setPeerHandle(assign?.peer?.handle || null);
     const myRole: 'P1'|'P2' = assign.role;
     const url = `${wsBase}?ticket=${encodeURIComponent(assign.ticket)}`;
     const socket = new WebSocket(url);
@@ -184,7 +199,16 @@ export default function HomePage() {
       try {
         const msg = JSON.parse(txt);
         setEvents((prev) => [{ t: Date.now(), msg }, ...prev].slice(0, 100));
-        if (shouldAudit(msg)) setLog((prev) => [txt, ...prev].slice(0, 50));
+        if (shouldAudit(msg)) {
+          const key = msg.type === 'MATCH_RESULT'
+            ? `${msg.type}#${msg.match_id}`
+            : `${msg.type}#${msg.match_id || ''}#${msg.turn || ''}`;
+          setAuditSeen((seen) => {
+            if (seen[key]) return seen;
+            setLog((prev) => [txt, ...prev].slice(0, 50));
+            return { ...seen, [key]: true };
+          });
+        }
         // P2P signaling
         if (pc) {
           if (msg.type === 'SDP_OFFER' && msg.match_id === assign.match_id && myRole === 'P2') {
@@ -305,9 +329,32 @@ export default function HomePage() {
         <div>
           <div>Signed in as: <strong>{session.handle}</strong> ({session.did})</div>
           {role && (
-            <div style={{ marginTop: 6, fontSize: 14, opacity: 0.85 }}>
-              Role: <strong>{role}</strong> • Match: <code>{matchId}</code> • Peer: <code>{peerDid || '-'}</code>
-            </div>
+            <>
+              <div style={{ marginTop: 6, fontSize: 14, opacity: 0.85 }}>
+                Role: <strong>{role}</strong> • Match: <code>{matchId}</code> • Opponent DID: <code>{peerDid || '-'}</code>
+              </div>
+              <div style={{
+                marginTop: 10,
+                padding: '10px 12px',
+                borderRadius: 8,
+                background: '#151922',
+                border: '1px solid #243049',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 10
+              }}>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ fontSize: 12, opacity: 0.8 }}>You</div>
+                  <div style={{ fontWeight: 700 }}>{session.handle}</div>
+                </div>
+                <div style={{ opacity: 0.7 }}>vs</div>
+                <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'right' }}>
+                  <div style={{ fontSize: 12, opacity: 0.8 }}>Opponent</div>
+                  <div style={{ fontWeight: 700 }}>{peerHandle || (peerDid || '-')}</div>
+                </div>
+              </div>
+            </>
           )}
           <div style={{ display: 'flex', gap: 12, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
             <button onClick={registerEntrant} style={{ padding: 12 }}>Register</button>
@@ -327,7 +374,7 @@ export default function HomePage() {
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
               <span>Turn: <strong>{turn || '-'}</strong></span>
               <span style={{ fontSize: 22 }}>Time left: <strong>{secondsLeft}s</strong></span>
-              <span>Score: <strong>You {p1Score} – {p2Score} Opp</strong></span>
+              <span>Score: <strong>You {p1Score} – {p2Score} {peerHandle || (peerDid || 'Opp')}</strong></span>
               <button disabled={!ws || !matchId || !turn} onClick={() => sendReveal('R')} style={{ padding: 16, fontSize: 16 }}>Rock</button>
               <button disabled={!ws || !matchId || !turn} onClick={() => sendReveal('P')} style={{ padding: 16, fontSize: 16 }}>Paper</button>
               <button disabled={!ws || !matchId || !turn} onClick={() => sendReveal('S')} style={{ padding: 16, fontSize: 16 }}>Scissors</button>
@@ -341,9 +388,9 @@ export default function HomePage() {
             {!!turnsTable.length && (
               <div style={{ marginTop: 16 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 10, alignItems: 'center', marginBottom: 6 }}>
-                  <div style={{ fontWeight: 700, opacity: 0.9 }}>YOU</div>
+                  <div style={{ fontWeight: 700, opacity: 0.9 }}>YOU ({session.handle})</div>
                   <div style={{ textAlign: 'center', fontWeight: 700, opacity: 0.9 }}>ROUND LOG</div>
-                  <div style={{ textAlign: 'right', fontWeight: 700, opacity: 0.9 }}>OPP</div>
+                  <div style={{ textAlign: 'right', fontWeight: 700, opacity: 0.9 }}>OPP ({peerHandle || (peerDid || '-')})</div>
                 </div>
                 {turnsTable.map((row) => {
                   const icon = row.result === 'WIN' ? '✓' : row.result === 'LOSE' ? '✕' : '≡';

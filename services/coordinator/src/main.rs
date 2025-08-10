@@ -103,6 +103,7 @@ async fn main() {
 static WAITING: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 static ASSIGNMENTS: Lazy<Mutex<std::collections::HashMap<String, ReadyForRoundResp>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 static ENTRANTS: Lazy<Mutex<std::collections::HashMap<String, Vec<String>>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
+static HANDLES: Lazy<Mutex<std::collections::HashMap<String, String>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
 #[derive(Debug, Deserialize)]
 struct QueueReadyReq { tid: String, did: String }
@@ -139,7 +140,7 @@ async fn queue_ready(Json(req): Json<QueueReadyReq>) -> Json<QueueReadyResp> {
 
 // --- Registration & tournament start ---
 #[derive(Debug, Deserialize)]
-struct RegisterReq { tid: String, did: String }
+struct RegisterReq { tid: String, did: String, handle: Option<String> }
 
 #[derive(Debug, Serialize)]
 struct RegisterResp { ok: bool }
@@ -147,7 +148,9 @@ struct RegisterResp { ok: bool }
 async fn register(Json(req): Json<RegisterReq>) -> Json<RegisterResp> {
     let mut e = ENTRANTS.lock().unwrap();
     let list = e.entry(req.tid).or_default();
-    if !list.iter().any(|d| d == &req.did) { list.push(req.did); }
+    let did_clone = req.did.clone();
+    if !list.iter().any(|d| d == &req.did) { list.push(req.did.clone()); }
+    if let Some(h) = req.handle { HANDLES.lock().unwrap().insert(did_clone, h); }
     Json(RegisterResp { ok: true })
 }
 
@@ -170,14 +173,17 @@ async fn start_round(Json(req): Json<StartRoundReq>) -> Json<StartRoundResp> {
                 let mid = format!("{}-r{}-{}-{}", req.tid, req.round, p1did.replace(':',"_"), p2did.replace(':',"_"));
                 let t1 = issue_jwt(&p1did, &mid);
                 let t2 = issue_jwt(&p2did, &mid);
-                ASSIGNMENTS.lock().unwrap().insert(p1did.clone(), ReadyForRoundResp { match_id: mid.clone(), role: "P1".into(), peer: serde_json::json!({"did": p2did}), ticket: t1 });
-                ASSIGNMENTS.lock().unwrap().insert(p2did.clone(), ReadyForRoundResp { match_id: mid.clone(), role: "P2".into(), peer: serde_json::json!({"did": p1did}), ticket: t2 });
+                let h = HANDLES.lock().unwrap();
+                let p1h = h.get(&p1did).cloned().unwrap_or_else(|| "unknown".into());
+                let p2h = h.get(&p2did).cloned().unwrap_or_else(|| "unknown".into());
+                ASSIGNMENTS.lock().unwrap().insert(p1did.clone(), ReadyForRoundResp { match_id: mid.clone(), role: "P1".into(), peer: serde_json::json!({"did": p2did, "handle": p2h}), ticket: t1 });
+                ASSIGNMENTS.lock().unwrap().insert(p2did.clone(), ReadyForRoundResp { match_id: mid.clone(), role: "P2".into(), peer: serde_json::json!({"did": p1did, "handle": p1h}), ticket: t2 });
                 pairs += 1;
             } else {
                 // odd -> AI seat
                 let mid = format!("{}-r{}-{}-AI", req.tid, req.round, p1did.replace(':',"_"));
                 let t1 = issue_jwt(&p1did, &mid);
-                ASSIGNMENTS.lock().unwrap().insert(p1did.clone(), ReadyForRoundResp { match_id: mid.clone(), role: "P1".into(), peer: serde_json::json!({"did": "AI"}), ticket: t1 });
+                ASSIGNMENTS.lock().unwrap().insert(p1did.clone(), ReadyForRoundResp { match_id: mid.clone(), role: "P1".into(), peer: serde_json::json!({"did": "AI", "handle": "AI_BYE"}), ticket: t1 });
             }
         }
     }
