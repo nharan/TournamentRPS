@@ -61,9 +61,9 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
     let mut p1_score: u32 = 0;
     let mut p2_score: u32 = 0;
     let mut current_turn: u32 = 1;
-    let http = HttpClient::new();
+    let _http = HttpClient::new();
     let _match_engine = std::env::var("MATCH_ENGINE_HTTP").unwrap_or_else(|_| "http://localhost:8083".to_string());
-    let fairness_http = std::env::var("FAIRNESS_HTTP").unwrap_or_else(|_| "http://localhost:8084".to_string());
+    let _fairness_http = std::env::var("FAIRNESS_HTTP").unwrap_or_else(|_| "http://localhost:8084".to_string());
     let (tx, mut rx) = mpsc::unbounded_channel::<InternalEvent>();
     let (relay_tx, mut relay_rx) = mpsc::unbounded_channel::<String>();
     let mut match_id_for_session: Option<String> = Some(mid_from_ticket.clone());
@@ -226,11 +226,11 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                                 .and_then(|pt| pt.get(&turn_idx))
                                 .and_then(|pp| pp.iter().find(|(k, _)| *k.as_str() != did).map(|(k, &m)| (k.clone(), m)))
                         };
-                        if let Some((opp_did, opp)) = maybe_opp_move {
+                        if let Some((_opp_did, _opp)) = maybe_opp_move {
                             // ensure not already resolved
                             let need_resolve = {
                                 let mut resolved = TURN_RESOLVED.lock().unwrap();
-                                let key = format!("{}#{}", mid_now, current_turn);
+                                let key = format!("{}#{}", mid_now, turn_idx);
                                 if resolved.contains(&key) { false } else { resolved.insert(key); true }
                             };
                             if !need_resolve { continue; }
@@ -251,7 +251,7 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                             let winner = if um == om { "DRAW" } else if beats(um, om) { "P1" } else { "P2" };
                             if winner == "P1" { p1_score += 1; } else if winner == "P2" { p2_score += 1; }
                             // Broadcast one canonical result to all peers
-                            let tr_all = TurnResult { match_id: mid_now.clone(), turn: current_turn, result: winner.into(), ai: Some(false), ai_for_dids: Some(vec![]), p1_move: Some(um.to_string()), p2_move: Some(om.to_string()) };
+                            let tr_all = TurnResult { match_id: mid_now.clone(), turn: turn_idx, result: winner.into(), ai: Some(false), ai_for_dids: Some(vec![]), p1_move: Some(um.to_string()), p2_move: Some(om.to_string()) };
                             if let Ok(txt_all) = serde_json::to_string(&ServerToClient::TurnResult(tr_all)) {
                                 // broadcast via mailbox only (avoid duplicate send to this socket)
                                 let peers = MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default();
@@ -260,7 +260,7 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                             // mark this turn resolved to prevent timeout fallback
                             {
                                 let mut resolved = TURN_RESOLVED.lock().unwrap();
-                                let key = format!("{}#{}", mid_now, current_turn);
+                                let key = format!("{}#{}", mid_now, turn_idx);
                                 resolved.insert(key);
                             }
                             // Next turn start for both
