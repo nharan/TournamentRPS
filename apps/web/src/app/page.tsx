@@ -28,6 +28,7 @@ export default function HomePage() {
   const [turnsTable, setTurnsTable] = useState<Array<{ turn: number; you: 'R'|'P'|'S'|'-'; opp: 'R'|'P'|'S'|'-'; result: 'WIN'|'LOSE'|'DRAW'; timeout: 'YOU'|'OPP'|'NONE' }>>([]);
   const [processed, setProcessed] = useState<Record<number, boolean>>({});
   const [auditSeen, setAuditSeen] = useState<Record<string, boolean>>({});
+  const [clockSkewMs, setClockSkewMs] = useState<number>(0); // serverNow - localNow
   const shortDid = (d?: string | null) => d ? ((d.startsWith('did:plc:') ? d.slice(8, 14) : d.slice(0, 6)) + '…') : '-';
   const roundFromMid = useMemo(() => {
     if (!matchId) return null;
@@ -35,7 +36,7 @@ export default function HomePage() {
     return m ? Number(m[1]) : null;
   }, [matchId]);
 
-  const MoveChip = ({ move, align = 'left' as 'left'|'right' }) => {
+  const MoveChip = ({ move, align = 'left' as 'left'|'right' }: { move: 'R'|'P'|'S'|'-'; align?: 'left'|'right' }) => {
     const label = (move || '-') as 'R'|'P'|'S'|'-';
     const bg = label === 'R' ? '#2b1d1d' : label === 'P' ? '#1d2431' : label === 'S' ? '#2b2a1d' : '#1f1f1f';
     const fg = label === 'R' ? '#ff7878' : label === 'P' ? '#7fb2ff' : label === 'S' ? '#f6d06d' : '#aaa';
@@ -61,12 +62,13 @@ export default function HomePage() {
   useEffect(() => {
     const t = setInterval(() => {
       if (!deadline) { setSecondsLeft(0); return; }
-      const now = Date.now() + (window as any).__serverClockSkewMs__ || Date.now();
-      const s = Math.max(0, Math.ceil((deadline - now) / 1000));
+      const now = Date.now() + clockSkewMs;
+      // Add 999ms before floor to reduce off-by-one jitters between clients
+      const s = Math.max(0, Math.floor((deadline - now + 999) / 1000));
       setSecondsLeft(s);
     }, 300);
     return () => clearInterval(t);
-  }, [deadline]);
+  }, [deadline, clockSkewMs]);
 
   const signIn = async () => {
     setAuthErr(null);
@@ -139,7 +141,7 @@ export default function HomePage() {
             if (msg.match_id) setMatchId(msg.match_id);
             if (typeof msg.now_ms_epoch === 'number') {
               const localNow = Date.now();
-              (window as any).__serverClockSkewMs__ = Number(msg.now_ms_epoch) - localNow;
+              setClockSkewMs(Number(msg.now_ms_epoch) - localNow);
             }
             if (msg.deadline_ms_epoch) setDeadline(Number(msg.deadline_ms_epoch));
           } else if (msg.type === 'MATCH_RESULT') {
@@ -248,7 +250,7 @@ export default function HomePage() {
           if (msg.match_id) setMatchId(msg.match_id);
           if (typeof msg.now_ms_epoch === 'number') {
             const localNow = Date.now();
-            (window as any).__serverClockSkewMs__ = Number(msg.now_ms_epoch) - localNow;
+            setClockSkewMs(Number(msg.now_ms_epoch) - localNow);
           }
           if (msg.deadline_ms_epoch) setDeadline(Number(msg.deadline_ms_epoch));
         } else if (msg.type === 'MATCH_RESULT') {
