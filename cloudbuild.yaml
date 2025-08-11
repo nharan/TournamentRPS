@@ -1,0 +1,37 @@
+steps:
+  # Build images
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build','-t','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/fairness:latest','-f','services/fairness/Dockerfile','.']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build','-t','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/match-engine:latest','-f','services/match-engine/Dockerfile','.']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build','-t','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/coordinator:latest','-f','services/coordinator/Dockerfile','.']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build','-t','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/signaling:latest','-f','services/signaling/Dockerfile','.']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build','-t','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/web:latest','-f','apps/web/Dockerfile','.']
+
+  # Push images
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/fairness:latest']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/match-engine:latest']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/coordinator:latest']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/signaling:latest']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/web:latest']
+
+substitutions:
+  _REGION: 'us-central1'
+  _REPO: 'rps'
+
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/fairness:latest'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/match-engine:latest'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/coordinator:latest'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/signaling:latest'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/web:latest'
+
+
