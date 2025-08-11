@@ -27,6 +27,7 @@ export default function HomePage() {
   const [sentByTurn, setSentByTurn] = useState<Record<number, { move: 'R'|'P'|'S'; at: number }>>({});
   const [turnsTable, setTurnsTable] = useState<Array<{ turn: number; you: 'R'|'P'|'S'|'-'; opp: 'R'|'P'|'S'|'-'; result: 'WIN'|'LOSE'|'DRAW'; timeout: 'YOU'|'OPP'|'NONE' }>>([]);
   const [processed, setProcessed] = useState<Record<number, boolean>>({});
+  const processedKeyedRef = useMemo(() => ({ set: new Set<string>() }), []);
   const [auditSeen, setAuditSeen] = useState<Record<string, boolean>>({});
   const [clockSkewMs, setClockSkewMs] = useState<number>(0); // serverNow - localNow
   const shortDid = (d?: string | null) => d ? ((d.startsWith('did:plc:') ? d.slice(8, 14) : d.slice(0, 6)) + '…') : '-';
@@ -258,11 +259,9 @@ export default function HomePage() {
           setDeadline(null);
         } else if (msg.type === 'TURN_RESULT') {
           const whoWon = msg.result as 'P1'|'P2'|'DRAW';
-          // de-dup: ignore if we've already processed this turn for this match
-          if (processed[msg.turn]) {
-            return;
-          }
-          setProcessed(prev => ({ ...prev, [msg.turn]: true }));
+          const key = `${msg.match_id || assign.match_id}#${msg.turn}`;
+          if (processedKeyedRef.set.has(key)) return;
+          processedKeyedRef.set.add(key);
           if (whoWon !== 'DRAW') {
             const youWon = whoWon === myRole;
             if (youWon) setP1Score((s) => s + 1); else setP2Score((s) => s + 1);
@@ -289,8 +288,10 @@ export default function HomePage() {
             else if (peerDid && aiFor.includes(peerDid)) timeout = 'OPP';
           }
           setTurnsTable((prev) => {
-            const withoutDup = prev.filter((r) => r.turn !== msg.turn);
-            return [...withoutDup, { turn: msg.turn ?? 0, you: youMove || '-', opp: oppMove || '-', result, timeout }].sort((a,b)=>a.turn-b.turn);
+            const withoutDup = prev.filter((r) => r.turn !== (msg.turn ?? 0));
+            const safeOpp: 'R'|'P'|'S'|'-' = (['R','P','S'] as const).includes(oppMove as any) ? (oppMove as 'R'|'P'|'S') : '-';
+            const safeYou: 'R'|'P'|'S'|'-' = (['R','P','S'] as const).includes(youMove as any) ? (youMove as 'R'|'P'|'S') : '-';
+            return [...withoutDup, { turn: msg.turn ?? 0, you: safeYou, opp: safeOpp, result, timeout }].sort((a,b)=>a.turn-b.turn);
           });
         }
       } catch {
@@ -327,7 +328,7 @@ export default function HomePage() {
   };
 
   return (
-    <main style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: 24 }}>
+    <main className="pz-app">
       <h1>Peace.Zone RPS</h1>
       {!session ? (
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
@@ -374,14 +375,14 @@ export default function HomePage() {
             </>
           )}
           <div style={{ display: 'flex', gap: 12, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button onClick={registerEntrant} style={{ padding: 12 }}>Register</button>
+            <button className="btn" onClick={registerEntrant}>Register</button>
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
               <span>Turn: <strong>{turn || '-'}</strong></span>
               <span style={{ fontSize: 22 }}>Time left: <strong>{secondsLeft}s</strong></span>
               <span>Score: <strong>You {p1Score} – {p2Score} {peerHandle || (peerDid || 'Opp')}</strong></span>
-              <button disabled={!ws || !matchId || !turn} onClick={() => sendReveal('R')} style={{ padding: 16, fontSize: 16 }}>Rock</button>
-              <button disabled={!ws || !matchId || !turn} onClick={() => sendReveal('P')} style={{ padding: 16, fontSize: 16 }}>Paper</button>
-              <button disabled={!ws || !matchId || !turn} onClick={() => sendReveal('S')} style={{ padding: 16, fontSize: 16 }}>Scissors</button>
+              <button className="move" disabled={!ws || !matchId || !turn} onClick={() => sendReveal('R')}>Rock</button>
+              <button className="move" disabled={!ws || !matchId || !turn} onClick={() => sendReveal('P')}>Paper</button>
+              <button className="move" disabled={!ws || !matchId || !turn} onClick={() => sendReveal('S')}>Scissors</button>
               {!!lastResult && (
                 <span style={{ marginLeft: 8 }}>
                   {lastResult}{lastMove ? ` (you played ${lastMove})` : ''}
@@ -448,6 +449,23 @@ export default function HomePage() {
           </pre>
         )}
       </section>
+      <style jsx global>{`
+        :root { --h1: 200; --h2: 330; --bg:#0b0f14; --glass:rgba(255,255,255,0.06); }
+        body { background:
+          radial-gradient(900px 500px at -10% -10%, hsl(var(--h1) 70% 20% / .5), transparent 60%),
+          radial-gradient(900px 500px at 110% 10%, hsl(var(--h2) 70% 20% / .5), transparent 60%),
+          linear-gradient(180deg,#0a0d12,#0e141e); color:#e6edf6; }
+        .pz-app { max-width: 1100px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+        .btn { padding: 12px 14px !important; border-radius: 12px !important; border: 1px solid rgba(255,255,255,0.14) !important; 
+          background: var(--glass) !important; backdrop-filter: blur(8px); color: #e6edf6 !important; }
+        .move { padding: 14px 18px !important; border-radius: 999px !important; border: 0 !important; color: white !important;
+          background: linear-gradient(180deg,hsl(var(--h1) 80% 52%), hsl(var(--h1) 80% 44%)) !important; box-shadow: 0 10px 28px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.2);
+          transition: transform .06s ease, filter .2s ease; }
+        .move:active { transform: translateY(1px); }
+        .move:nth-of-type(2) { background: linear-gradient(180deg,hsl(50 90% 58%), hsl(43 90% 48%)) !important; }
+        .move:nth-of-type(3) { background: linear-gradient(180deg,hsl(var(--h2) 80% 52%), hsl(var(--h2) 80% 44%)) !important; }
+        pre { background: rgba(0,0,0,.55) !important; }
+      `}</style>
     </main>
   );
 }

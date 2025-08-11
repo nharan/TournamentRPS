@@ -255,7 +255,7 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                             // Broadcast one canonical result to all peers
                             let tr_all = TurnResult { match_id: mid_now.clone(), turn: turn_idx, result: winner.into(), ai: Some(false), ai_for_dids: Some(vec![]), p1_move: Some(um.to_string()), p2_move: Some(om.to_string()) };
                             if let Ok(txt_all) = serde_json::to_string(&ServerToClient::TurnResult(tr_all)) {
-                                // send to this socket as well as broadcast via mailbox for robustness
+                                // Send to this socket and broadcast via mailbox. Client de-dups.
                                 let _ = socket.send(Message::Text(txt_all.clone())).await;
                                 let peers = MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default();
                                 for p in peers { let _ = p.send(txt_all.clone()); }
@@ -265,6 +265,18 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                                 let mut resolved = TURN_RESOLVED.lock().unwrap();
                                 let key = format!("{}#{}", mid_now, turn_idx);
                                 resolved.insert(key);
+                            }
+                            // If someone reached 5 wins, end match now
+                            if p1_score >= 5 || p2_score >= 5 {
+                                let winner_id = if p1_score >= 5 { "P1" } else { "P2" };
+                                let mr = MatchResult { match_id: mid_now.clone(), winner: winner_id.into() };
+                                if let Ok(txt) = serde_json::to_string(&ServerToClient::MatchResult(mr)) {
+                                    // Send to this socket first so the player who triggered it logs the final win
+                                    let _ = socket.send(Message::Text(txt.clone())).await;
+                                    let peers = MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default();
+                                    for p in peers { let _ = p.send(txt.clone()); }
+                                }
+                                break;
                             }
                             // Next turn start for both
                             current_turn = turn_idx + 1;
@@ -281,7 +293,6 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                             let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_millis(0)).as_millis() as i64;
                             let ts = TurnStart { match_id: mid_now.clone(), turn: current_turn, deadline_ms_epoch: next_deadline, now_ms_epoch: now_ms };
                             if let Ok(txt_ts) = serde_json::to_string(&ServerToClient::TurnStart(ts)) {
-                                let _ = socket.send(Message::Text(txt_ts.clone())).await;
                                 let peers = { MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default() };
                                 for p in peers { let _ = p.send(txt_ts.clone()); }
                             }
@@ -382,7 +393,7 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                 }
                 let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_millis(0)).as_millis() as i64;
                 let ts = TurnStart { match_id: mid_now.clone(), turn: current_turn, deadline_ms_epoch: next_deadline, now_ms_epoch: now_ms };
-                if let Ok(txt_ts) = serde_json::to_string(&ServerToClient::TurnStart(ts)) { let _ = socket.send(Message::Text(txt_ts.clone())).await; let peers = { MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default() }; for p in peers { let _ = p.send(txt_ts.clone()); } }
+                if let Ok(txt_ts) = serde_json::to_string(&ServerToClient::TurnStart(ts)) { let peers = { MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default() }; for p in peers { let _ = p.send(txt_ts.clone()); } }
                 // schedule next timeout
                 let tx2 = tx.clone();
                 let mid_clone = mid_now.clone();
