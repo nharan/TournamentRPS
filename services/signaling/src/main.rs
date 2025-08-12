@@ -415,6 +415,8 @@ async fn main() {
         .route("/healthz", get(health))
         .route("/ws", get(ws_handler))
         .route("/ready", post(|| async { "ok" }))
+        .route("/admin/reset", post(admin_reset))
+        .route("/admin/state", get(admin_state))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any));
 
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
@@ -422,4 +424,46 @@ async fn main() {
     tracing::info!(%addr, "signaling listening");
     let listener = TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+// --- Admin endpoints ---
+#[derive(Debug, serde::Deserialize)]
+struct AdminResetReq { match_id: Option<String> }
+
+#[derive(Debug, serde::Serialize)]
+struct AdminResetResp { ok: bool, cleared_matches: usize }
+
+async fn admin_reset(axum::Json(req): axum::Json<AdminResetReq>) -> axum::Json<AdminResetResp> {
+    if let Some(mid) = req.match_id {
+        MAILBOXES.lock().unwrap().remove(&mid);
+        REVEALS.lock().unwrap().remove(&mid);
+        PARTICIPANTS.lock().unwrap().remove(&mid);
+        MATCH_STARTED.lock().unwrap().remove(&mid);
+        TURN_STATE.lock().unwrap().remove(&mid);
+        // remove any TURN_RESOLVED keys for this mid
+        {
+            let mut tr = TURN_RESOLVED.lock().unwrap();
+            let keys: Vec<String> = tr.iter().filter(|k| k.starts_with(&format!("{}#", mid))).cloned().collect();
+            for k in keys { tr.remove(&k); }
+        }
+        axum::Json(AdminResetResp { ok: true, cleared_matches: 1 })
+    } else {
+        MAILBOXES.lock().unwrap().clear();
+        REVEALS.lock().unwrap().clear();
+        PARTICIPANTS.lock().unwrap().clear();
+        MATCH_STARTED.lock().unwrap().clear();
+        TURN_RESOLVED.lock().unwrap().clear();
+        TURN_STATE.lock().unwrap().clear();
+        axum::Json(AdminResetResp { ok: true, cleared_matches: 0 })
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+struct AdminStateResp { matches: usize, participants: usize, pending_turn_states: usize }
+
+async fn admin_state() -> axum::Json<AdminStateResp> {
+    let matches = MAILBOXES.lock().unwrap().len();
+    let participants: usize = PARTICIPANTS.lock().unwrap().values().map(|s| s.len()).sum();
+    let pending_turn_states = TURN_STATE.lock().unwrap().len();
+    axum::Json(AdminStateResp { matches, participants, pending_turn_states })
 }

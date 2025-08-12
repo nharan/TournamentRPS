@@ -90,6 +90,8 @@ async fn main() {
         .route("/register", post(register))
         .route("/start_round", post(start_round))
         .route("/assignment", get(assignment))
+        .route("/admin/reset", post(admin_reset))
+        .route("/admin/state", get(admin_state))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any));
 
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
@@ -203,4 +205,70 @@ async fn assignment(Query(q): Query<AssignmentQuery>) -> Json<AssignmentResp> {
     } else {
         Json(AssignmentResp::WAIT)
     }
+}
+
+// --- Admin: reset and state ---
+#[derive(Debug, Deserialize)]
+struct AdminResetReq { tid: Option<String> }
+
+#[derive(Debug, Serialize)]
+struct AdminResetResp { ok: bool, cleared_dids: usize, cleared_pairs: usize }
+
+async fn admin_reset(Json(req): Json<AdminResetReq>) -> Json<AdminResetResp> {
+    // Collect DIDs to clear if tid provided
+    let mut cleared_dids = 0usize;
+    if let Some(tid) = req.tid {
+        let dids: Vec<String> = {
+            let mut e = ENTRANTS.lock().unwrap();
+            e.remove(&tid).unwrap_or_default()
+        };
+        cleared_dids = dids.len();
+        // Clear assignments for these DIDs
+        if !dids.is_empty() {
+            let mut a = ASSIGNMENTS.lock().unwrap();
+            for d in &dids { a.remove(d); }
+        }
+        // Clear handles for these DIDs
+        if !dids.is_empty() {
+            let mut h = HANDLES.lock().unwrap();
+            for d in &dids { h.remove(d); }
+        }
+        // If waiting contains one of these DIDs, clear it
+        {
+            let mut w = WAITING.lock().unwrap();
+            if let Some(cur) = &*w { if dids.iter().any(|d| d == cur) { *w = None; } }
+        }
+    } else {
+        // Full wipe
+        ENTRANTS.lock().unwrap().clear();
+        HANDLES.lock().unwrap().clear();
+        ASSIGNMENTS.lock().unwrap().clear();
+        *WAITING.lock().unwrap() = None;
+    }
+    // pairs cleared is approximate: number of assignment entries removed in this call
+    let cleared_pairs = cleared_dids / 2;
+    Json(AdminResetResp { ok: true, cleared_dids, cleared_pairs })
+}
+
+#[derive(Debug, Serialize)]
+struct AdminStateResp {
+    entrants_tids: usize,
+    total_entrants: usize,
+    waiting_present: bool,
+    assignments: usize,
+    handles: usize,
+}
+
+async fn admin_state() -> Json<AdminStateResp> {
+    let entrants_tids = ENTRANTS.lock().unwrap().len();
+    let total_entrants: usize = ENTRANTS
+        .lock()
+        .unwrap()
+        .values()
+        .map(|v| v.len())
+        .sum();
+    let waiting_present = WAITING.lock().unwrap().is_some();
+    let assignments = ASSIGNMENTS.lock().unwrap().len();
+    let handles = HANDLES.lock().unwrap().len();
+    Json(AdminStateResp { entrants_tids, total_entrants, waiting_present, assignments, handles })
 }
