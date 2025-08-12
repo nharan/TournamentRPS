@@ -57,6 +57,19 @@ static TURN_RESOLVED: Lazy<Mutex<HashSet<String>>> = Lazy::new(|| Mutex::new(Has
 // shared turn state per match: (current_turn, deadline_ms_epoch)
 static TURN_STATE: Lazy<Mutex<HashMap<String, (u32, i64)>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
+fn clear_match_state(mid: &str) {
+    MAILBOXES.lock().unwrap().remove(mid);
+    REVEALS.lock().unwrap().remove(mid);
+    PARTICIPANTS.lock().unwrap().remove(mid);
+    MATCH_STARTED.lock().unwrap().remove(mid.to_string().as_str());
+    TURN_STATE.lock().unwrap().remove(mid);
+    // remove resolved keys with this prefix
+    let mut tr = TURN_RESOLVED.lock().unwrap();
+    let pref = format!("{}#", mid);
+    let keys: Vec<String> = tr.iter().filter(|k| k.starts_with(&pref)).cloned().collect();
+    for k in keys { tr.remove(&k); }
+}
+
 async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: String) {
     let mut p1_score: u32 = 0;
     let mut p2_score: u32 = 0;
@@ -86,6 +99,12 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
     tracing::info!(%turn_deadline_ms, "turn deadline configured");
     let mut turn_started = false;
 
+    // If no active turn state exists for this match, clear any stale leftovers before we register
+    {
+        let needs_init = { TURN_STATE.lock().unwrap().get(&mid_from_ticket).is_none() };
+        if needs_init { clear_match_state(&mid_from_ticket); }
+    }
+
     // register this connection to the mailbox for this match
     {
         let mut m = MAILBOXES.lock().unwrap();
@@ -101,7 +120,9 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
     if let Some(mid) = match_id_for_session.clone() {
         let (t, d) = {
             let mut ts = TURN_STATE.lock().unwrap();
-            if let Some((t, d)) = ts.get(&mid).copied() { (t, d) } else {
+            if let Some((t, d)) = ts.get(&mid).copied() {
+                (t, d)
+            } else {
                 let deadline = SystemTime::now()
                     .checked_add(Duration::from_millis(turn_deadline_ms))
                     .unwrap_or(SystemTime::now())
@@ -110,12 +131,9 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                     .as_millis() as i64;
                 ts.insert(mid.clone(), (1, deadline));
                 // schedule timeout once
-                let should = { let mut s = MATCH_STARTED.lock().unwrap(); if !s.contains(&mid) { s.insert(mid.clone()); true } else { false } };
-                if should {
-                    let tx2 = tx.clone(); let mid_clone = mid.clone();
-                    tokio::spawn(async move { sleep(Duration::from_millis(turn_deadline_ms)).await; let _ = tx2.send(InternalEvent::Timeout(1, mid_clone)); });
-                    turn_started = true;
-                }
+                let tx2 = tx.clone(); let mid_clone = mid.clone();
+                tokio::spawn(async move { sleep(Duration::from_millis(turn_deadline_ms)).await; let _ = tx2.send(InternalEvent::Timeout(1, mid_clone)); });
+                turn_started = true;
                 (1, deadline)
             }
         };
@@ -320,18 +338,22 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                 let _ = socket.send(Message::Text("{\"type\":\"ERROR\",\"data\":{\"code\":\"UNSUPPORTED\",\"msg\":\"binary not supported\"}}".into())).await;
             }
             Message::Close(_) => {
-                // on close, if this match still exists and now <2 participants, notify remaining
+                // on close, if this match still exists and now <2 participants, notify remaining and clear state
                 if let Some(mid) = &match_id_for_session {
-                    let mut parts = PARTICIPANTS.lock().unwrap();
-                    if let Some(set) = parts.get_mut(mid) {
-                        set.remove(&did);
-                        if set.len() < 2 {
-                            let msg = OpponentLeft { match_id: mid.clone() };
-                            if let Ok(txt) = serde_json::to_string(&ServerToClient::OpponentLeft(msg)) {
-                                let peers = MAILBOXES.lock().unwrap().get(mid).cloned().unwrap_or_default();
-                                for p in peers { let _ = p.send(txt.clone()); }
-                            }
+                    let notify_needed = {
+                        let mut parts = PARTICIPANTS.lock().unwrap();
+                        if let Some(set) = parts.get_mut(mid) {
+                            set.remove(&did);
+                            set.len() < 2
+                        } else { true }
+                    };
+                    if notify_needed {
+                        let msg = OpponentLeft { match_id: mid.clone() };
+                        if let Ok(txt) = serde_json::to_string(&ServerToClient::OpponentLeft(msg)) {
+                            let peers = MAILBOXES.lock().unwrap().get(mid).cloned().unwrap_or_default();
+                            for p in peers { let _ = p.send(txt.clone()); }
                         }
+                        clear_match_state(mid);
                     }
                 }
                 break;
@@ -356,6 +378,7 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                         let peers = { MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default() };
                         for p in peers { let _ = p.send(txt.clone()); }
                     }
+                    clear_match_state(&mid_now);
                     break;
                 }
                 let already_resolved = {

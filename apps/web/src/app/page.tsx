@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { BskyAgent } from '@atproto/api';
 
 export default function HomePage() {
@@ -31,6 +31,7 @@ export default function HomePage() {
   const processedKeyedRef = useMemo(() => ({ set: new Set<string>() }), []);
   const [auditSeen, setAuditSeen] = useState<Record<string, boolean>>({});
   const [clockSkewMs, setClockSkewMs] = useState<number>(0); // serverNow - localNow
+  const findingRef = useRef<boolean>(false);
   const shortDid = (d?: string | null) => d ? ((d.startsWith('did:plc:') ? d.slice(8, 14) : d.slice(0, 6)) + '…') : '-';
   const roundFromMid = useMemo(() => {
     if (!matchId) return null;
@@ -310,11 +311,14 @@ export default function HomePage() {
 
   // 2P: Connect via coordinator queue and establish WebRTC DataChannel
   const connect2P = async () => {
-    if (ws || !session) return;
+    if (ws || !session || findingRef.current) return;
+    findingRef.current = true;
     const coordBase = process.env.NEXT_PUBLIC_COORDINATOR_HTTP || 'http://localhost:8082';
     // poll queue until ASSIGN
     let assign: any = null;
     for (let i = 0; i < 20; i++) {
+      // If we already connected while polling, stop
+      if (ws) { findingRef.current = false; return; }
       const res = await fetch(`${coordBase}/queue_ready`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -324,8 +328,14 @@ export default function HomePage() {
       if (j.status === 'ASSIGN') { assign = j; break; }
       await new Promise(r => setTimeout(r, 1000));
     }
-    if (!assign) { alert('Queue timeout'); return; }
+    if (!assign) {
+      // No alert; just log and allow user to retry
+      setLog(prev => ['queue: no opponent found (timeout)', ...prev]);
+      findingRef.current = false;
+      return;
+    }
     await connectWithAssignment(assign);
+    findingRef.current = false;
   };
 
   // Normal mode: auto-queue/connect upon sign-in
@@ -364,10 +374,7 @@ export default function HomePage() {
     }
   };
 
-  const playAgain = async () => {
-    await leaveMatch();
-    await connect2P();
-  };
+  const playAgain = async () => { await leaveMatch(); await connect2P(); };
 
   const sendReveal = async (move: 'R' | 'P' | 'S') => {
     if (!ws || !matchId || !turn) return;
