@@ -57,6 +57,19 @@ export default function AdminPage() {
     } finally { setBusy(false); }
   };
 
+  const resetEverything = async () => {
+    setBusy(true); setMsg('');
+    try {
+      const [cr, sr] = await Promise.all([
+        fetch(`${coordBase}/admin/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).then(r => r.json()).catch(() => ({})),
+        fetch(`${sigHttpBase}/admin/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).then(r => r.json()).catch(() => ({})),
+      ]);
+      setMsg(`reset all done\ncoordinator=${JSON.stringify(cr)}\nsignaling=${JSON.stringify(sr)}`);
+    } catch (e: any) {
+      setMsg(`reset all failed: ${e?.message || e}`);
+    } finally { setBusy(false); }
+  };
+
   return (
     <main style={{ maxWidth: 800, margin: '0 auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
       <h1>Admin</h1>
@@ -68,6 +81,7 @@ export default function AdminPage() {
         <button disabled={busy} onClick={startRound}>Start round</button>
         <button disabled={busy} onClick={resetTournament}>Reset tournament (coordinator)</button>
         <button disabled={busy} onClick={resetSignaling}>Reset signaling (matches)</button>
+        <button disabled={busy} onClick={resetEverything}>Reset everything</button>
         <button disabled={busy} onClick={viewState}>View state</button>
       </div>
       {!!msg && (

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { BskyAgent } from '@atproto/api';
 
 export default function HomePage() {
+  const MODE: 'normal' | 'tournament' = (process.env.NEXT_PUBLIC_MODE === 'tournament') ? 'tournament' : 'normal';
   const [session, setSession] = useState<{ did: string; handle: string } | null>(null);
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [log, setLog] = useState<string[]>([]);
@@ -309,13 +310,58 @@ export default function HomePage() {
     // poll queue until ASSIGN
     let assign: any = null;
     for (let i = 0; i < 20; i++) {
-      const res = await fetch(`${coordBase}/queue_ready`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tid: 'demo', did: session.did }) });
+      const res = await fetch(`${coordBase}/queue_ready`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tid: 'demo', did: session.did, handle: session.handle })
+      });
       const j = await res.json();
       if (j.status === 'ASSIGN') { assign = j; break; }
       await new Promise(r => setTimeout(r, 1000));
     }
     if (!assign) { alert('Queue timeout'); return; }
     await connectWithAssignment(assign);
+  };
+
+  // Normal mode: auto-queue/connect upon sign-in
+  useEffect(() => {
+    if (MODE === 'normal' && session && !ws) {
+      connect2P();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [MODE, session, ws]);
+
+  const resetLocalState = () => {
+    setMatchId(null);
+    setRole(null);
+    setPeerDid(null);
+    setPeerHandle(null);
+    setTurn(0);
+    setDeadline(null);
+    setSecondsLeft(0);
+    setLastResult('');
+    setLastMove(null);
+    setP1Score(0);
+    setP2Score(0);
+    setSentByTurn({});
+    setTurnsTable([]);
+    processedKeyedRef.set.clear?.();
+  };
+
+  const leaveMatch = async () => {
+    try {
+      if (ws) { try { ws.close(); } catch {} }
+      if (pc) { try { pc.close(); } catch {} }
+      if (dc) { try { dc.close(); } catch {} }
+    } finally {
+      setWs(null); setPc(null); setDc(null);
+      resetLocalState();
+    }
+  };
+
+  const playAgain = async () => {
+    await leaveMatch();
+    await connect2P();
   };
 
   const sendReveal = async (move: 'R' | 'P' | 'S') => {
@@ -375,7 +421,16 @@ export default function HomePage() {
             </>
           )}
           <div style={{ display: 'flex', gap: 12, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button className="btn" onClick={registerEntrant}>Register</button>
+            {MODE === 'tournament' ? (
+              <button className="btn" onClick={registerEntrant}>Register</button>
+            ) : (
+              <>
+                <span style={{ opacity: 0.8 }}>Mode: Normal (auto-match)</span>
+                {!ws && <button className="btn" onClick={connect2P}>Find opponent</button>}
+                {!!ws && <button className="btn" onClick={leaveMatch}>Leave match</button>}
+                <button className="btn" onClick={playAgain}>Play again</button>
+              </>
+            )}
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
               <span>Turn: <strong>{turn || '-'}</strong></span>
               <span style={{ fontSize: 22 }}>Time left: <strong>{secondsLeft}s</strong></span>

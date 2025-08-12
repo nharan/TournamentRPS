@@ -108,7 +108,7 @@ static ENTRANTS: Lazy<Mutex<std::collections::HashMap<String, Vec<String>>>> = L
 static HANDLES: Lazy<Mutex<std::collections::HashMap<String, String>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
 #[derive(Debug, Deserialize)]
-struct QueueReadyReq { tid: String, did: String }
+struct QueueReadyReq { tid: String, did: String, handle: Option<String>, ai_if_alone: Option<bool> }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "status")]
@@ -118,23 +118,53 @@ enum QueueReadyResp {
 }
 
 async fn queue_ready(Json(req): Json<QueueReadyReq>) -> Json<QueueReadyResp> {
+    // Record/refresh handle if provided (normal mode sign-in path)
+    if let Some(h) = req.handle.as_ref() { HANDLES.lock().unwrap().insert(req.did.clone(), h.clone()); }
     // Check if there is an assignment prepared for this DID
     if let Some(a) = ASSIGNMENTS.lock().unwrap().remove(&req.did) {
         return Json(QueueReadyResp::ASSIGN { match_id: a.match_id, role: a.role, peer: a.peer, ticket: a.ticket });
     }
     let mut w = WAITING.lock().unwrap();
     if let Some(other) = w.take() {
-        // Pair other with this did
-        let (p1, p2) = if other < req.did { (other, req.did.clone()) } else { (req.did.clone(), other) };
+        // If the other waiting DID is the same as this requester, keep waiting
+        if other == req.did {
+            *w = Some(other);
+            return Json(QueueReadyResp::WAIT);
+        }
+        // Pair other with this did (canonical p1/p2 by sort for match_id stability)
+        let (p1, p2) = if other < req.did { (other.clone(), req.did.clone()) } else { (req.did.clone(), other.clone()) };
         let match_id = format!("{}-{}-{}", req.tid, p1.replace(':',"_"), p2.replace(':',"_"));
         let t1 = issue_jwt(&p1, &match_id);
         let t2 = issue_jwt(&p2, &match_id);
-        // Prepare assignment for the other player
-        ASSIGNMENTS.lock().unwrap().insert(p1.clone(), ReadyForRoundResp { match_id: match_id.clone(), role: "P1".into(), peer: serde_json::json!({"did": p2, "handle": "peer"}), ticket: t1 });
-        // Return assignment for current player
-        let resp = QueueReadyResp::ASSIGN { match_id, role: "P2".into(), peer: serde_json::json!({"did": p1, "handle": "peer"}), ticket: t2 };
-        return Json(resp);
+        // Determine handles if known
+        let (p1h, p2h) = {
+            let h = HANDLES.lock().unwrap();
+            (h.get(&p1).cloned().unwrap_or_else(|| "unknown".into()), h.get(&p2).cloned().unwrap_or_else(|| "unknown".into()))
+        };
+        // Prepare assignment for the waiting player ("other") with the correct role and ticket
+        if other == p1 {
+            ASSIGNMENTS.lock().unwrap().insert(other.clone(), ReadyForRoundResp {
+                match_id: match_id.clone(),
+                role: "P1".into(),
+                peer: serde_json::json!({"did": p2, "handle": p2h}),
+                ticket: t1,
+            });
+            // Return assignment for current requester as P2
+            let resp = QueueReadyResp::ASSIGN { match_id, role: "P2".into(), peer: serde_json::json!({"did": p1, "handle": p1h}), ticket: t2 };
+            return Json(resp);
+        } else {
+            ASSIGNMENTS.lock().unwrap().insert(other.clone(), ReadyForRoundResp {
+                match_id: match_id.clone(),
+                role: "P2".into(),
+                peer: serde_json::json!({"did": p1, "handle": p1h}),
+                ticket: t2,
+            });
+            // Return assignment for current requester as P1
+            let resp = QueueReadyResp::ASSIGN { match_id, role: "P1".into(), peer: serde_json::json!({"did": p2, "handle": p2h}), ticket: t1 };
+            return Json(resp);
+        }
     } else {
+        // Normal play mode (no AI auto-fill): wait for a peer
         *w = Some(req.did);
         return Json(QueueReadyResp::WAIT);
     }
