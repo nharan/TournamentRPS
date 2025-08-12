@@ -7,7 +7,7 @@ use axum::{
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use futures::StreamExt;
-use rps_shared_types::{ClientToServer, ServerToClient, Assign as AssignMsg, Peer, RtcConfig, TurnStart, TurnResult, MatchResult};
+use rps_shared_types::{ClientToServer, ServerToClient, Assign as AssignMsg, Peer, RtcConfig, TurnStart, TurnResult, MatchResult, OpponentLeft};
 use sha2::{Digest, Sha256};
 use hex::ToHex;
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
@@ -320,6 +320,20 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                 let _ = socket.send(Message::Text("{\"type\":\"ERROR\",\"data\":{\"code\":\"UNSUPPORTED\",\"msg\":\"binary not supported\"}}".into())).await;
             }
             Message::Close(_) => {
+                // on close, if this match still exists and now <2 participants, notify remaining
+                if let Some(mid) = &match_id_for_session {
+                    let mut parts = PARTICIPANTS.lock().unwrap();
+                    if let Some(set) = parts.get_mut(mid) {
+                        set.remove(&did);
+                        if set.len() < 2 {
+                            let msg = OpponentLeft { match_id: mid.clone() };
+                            if let Ok(txt) = serde_json::to_string(&ServerToClient::OpponentLeft(msg)) {
+                                let peers = MAILBOXES.lock().unwrap().get(mid).cloned().unwrap_or_default();
+                                for p in peers { let _ = p.send(txt.clone()); }
+                            }
+                        }
+                    }
+                }
                 break;
             }
             Message::Ping(p) => { let _ = socket.send(Message::Pong(p)).await; }
@@ -335,6 +349,15 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                 let InternalEvent::Timeout(tn, mid_now) = evt;
                 if tn != current_turn { continue; }
                 // ensure not already resolved
+                // If we lost a participant before resolution, notify and end match loop
+                let parts_count = { PARTICIPANTS.lock().unwrap().get(&mid_now).map(|s| s.len()).unwrap_or(0) };
+                if parts_count < 2 {
+                    if let Ok(txt) = serde_json::to_string(&ServerToClient::OpponentLeft(OpponentLeft { match_id: mid_now.clone() })) {
+                        let peers = { MAILBOXES.lock().unwrap().get(&mid_now).cloned().unwrap_or_default() };
+                        for p in peers { let _ = p.send(txt.clone()); }
+                    }
+                    break;
+                }
                 let already_resolved = {
                     let resolved = TURN_RESOLVED.lock().unwrap();
                     let key = format!("{}#{}", mid_now, current_turn);

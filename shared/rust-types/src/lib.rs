@@ -41,6 +41,9 @@ pub struct TurnResult {
 pub struct MatchResult { pub match_id: String, pub winner: String }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpponentLeft { pub match_id: String }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorMsg { pub code: String, pub msg: String }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +53,7 @@ pub enum ServerToClient {
   TurnStart(TurnStart),
   TurnResult(TurnResult),
   MatchResult(MatchResult),
+  OpponentLeft(OpponentLeft),
   Error(ErrorMsg),
 }
 

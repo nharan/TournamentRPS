@@ -258,6 +258,11 @@ export default function HomePage() {
         } else if (msg.type === 'MATCH_RESULT') {
           setTurn(0);
           setDeadline(null);
+        } else if (msg.type === 'OPPONENT_LEFT') {
+          // Opponent left: exit match and requeue in normal mode
+          await leaveMatch();
+          if (MODE === 'normal') { await connect2P(); }
+          return;
         } else if (msg.type === 'TURN_RESULT') {
           const whoWon = msg.result as 'P1'|'P2'|'DRAW';
           const key = `${msg.match_id || assign.match_id}#${msg.turn}`;
