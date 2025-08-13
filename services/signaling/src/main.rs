@@ -148,11 +148,16 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
     }
     // forward relayed messages to this socket
     // handle socket and relay messages in a single loop to avoid ownership issues
+    let mut last_seen = std::time::Instant::now();
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(2));
+    let heartbeat_timeout = Duration::from_secs(6);
     loop {
         tokio::select! {
             maybe_msg = socket.next() => {
                 let Some(res) = maybe_msg else { break };
                 let Ok(msg) = res else { break };
+                // any inbound frame counts as liveness
+                last_seen = std::time::Instant::now();
                 match msg {
             Message::Text(txt) => {
                 tracing::info!(incoming = %txt, "ws text");
@@ -360,6 +365,22 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
             }
             Message::Ping(p) => { let _ = socket.send(Message::Pong(p)).await; }
             Message::Pong(_) => {}
+                }
+            }
+            // server-side heartbeat: ping periodically and drop if peer is unresponsive
+            _ = heartbeat.tick() => {
+                if last_seen.elapsed() > heartbeat_timeout {
+                    if let Some(mid) = &match_id_for_session {
+                        let msg = OpponentLeft { match_id: mid.clone() };
+                        if let Ok(txt) = serde_json::to_string(&ServerToClient::OpponentLeft(msg)) {
+                            let peers = MAILBOXES.lock().unwrap().get(mid).cloned().unwrap_or_default();
+                            for p in peers { let _ = p.send(txt.clone()); }
+                        }
+                        clear_match_state(mid);
+                    }
+                    break;
+                } else {
+                    let _ = socket.send(Message::Ping(Vec::new())).await;
                 }
             }
             // relay messages destined to this client
