@@ -6,6 +6,7 @@ members = [
   "services/fairness",
   "services/atproto-writer",
   "shared/rust-types",
+  "tools/simulator"
 ]
 resolver = "2"
 
