@@ -387,7 +387,7 @@ export default function HomePage() {
 
   return (
     <main className="pz-app">
-      <h1>Peace.Zone RPS</h1>
+      <h1>Rock Paper Scissors</h1>
       {!session ? (
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -403,35 +403,27 @@ export default function HomePage() {
         </div>
       ) : (
         <div>
-          <div>Signed in as: <strong>{session.handle}</strong> <span style={{ opacity: 0.7 }}>({shortDid(session.did)})</span></div>
-          {role && (
-            <>
-              <div style={{ marginTop: 6, fontSize: 14, opacity: 0.85 }}>
-                Role: <strong>{role}</strong> • Round: <strong>{roundFromMid ?? '-'}</strong> • Opponent: <strong>{peerHandle || shortDid(peerDid)}</strong>
-              </div>
-              <div style={{
-                marginTop: 10,
-                padding: '10px 12px',
-                borderRadius: 8,
-                background: '#151922',
-                border: '1px solid #243049',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 10
-              }}>
-                <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  <div style={{ fontSize: 12, opacity: 0.8 }}>You</div>
-                  <div style={{ fontWeight: 700 }}>{session.handle}</div>
-                </div>
-                <div style={{ opacity: 0.7 }}>vs</div>
-                <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'right' }}>
-                  <div style={{ fontSize: 12, opacity: 0.8 }}>Opponent</div>
-                  <div style={{ fontWeight: 700 }}>{peerHandle || (peerDid || '-')}</div>
-                </div>
-              </div>
-            </>
-          )}
+          <div style={{
+            marginTop: 10,
+            padding: '10px 12px',
+            borderRadius: 8,
+            background: '#151922',
+            border: '1px solid #243049',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 10
+          }}>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <div style={{ fontSize: 12, opacity: 0.8 }}>You</div>
+              <div style={{ fontWeight: 700 }}>{session.handle}</div>
+            </div>
+            <div style={{ opacity: 0.7 }}>vs</div>
+            <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'right' }}>
+              <div style={{ fontSize: 12, opacity: 0.8 }}>Opponent</div>
+              <div style={{ fontWeight: 700 }}>{peerHandle || (peerDid || '-')}</div>
+            </div>
+          </div>
           <div style={{ display: 'flex', gap: 12, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
             {MODE === 'tournament' ? (
               <button className="btn" onClick={registerEntrant}>Register</button>
@@ -447,15 +439,19 @@ export default function HomePage() {
               <span>Turn: <strong>{turn || '-'}</strong></span>
               <span style={{ fontSize: 22 }}>Time left: <strong>{secondsLeft}s</strong></span>
               <span>Score: <strong>You {p1Score} – {p2Score} {peerHandle || (peerDid || 'Opp')}</strong></span>
+            </div>
+            <div style={{ display: 'flex', gap: 12, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <button className="move" disabled={!ws || !matchId || !turn} onClick={() => sendReveal('R')}>Rock</button>
               <button className="move" disabled={!ws || !matchId || !turn} onClick={() => sendReveal('P')}>Paper</button>
               <button className="move" disabled={!ws || !matchId || !turn} onClick={() => sendReveal('S')}>Scissors</button>
-              {!!lastResult && (
-                <span style={{ marginLeft: 8 }}>
+            </div>
+            {!!lastResult && (
+              <div style={{ marginTop: 8 }}>
+                <span>
                   {lastResult}{lastMove ? ` (you played ${lastMove})` : ''}
                 </span>
-              )}
-            </div>
+              </div>
+            )}
             {/* Turns table - NYT-inspired lightweight layout */}
             {!!turnsTable.length && (
               <div style={{ marginTop: 16 }}>
@@ -507,15 +503,17 @@ export default function HomePage() {
           </div>
         </div>
       )}
-      <section>
-        <h2>Audit</h2>
-        <p>Round anchors and logs will be listed here for public verification.</p>
-        {!!log.length && (
-          <pre style={{ whiteSpace: 'pre-wrap', background: '#111', color: '#eee', padding: 12, borderRadius: 6 }}>
-            {log.join('\n')}
-          </pre>
-        )}
-      </section>
+      {debug && (
+        <section>
+          <h2>Audit</h2>
+          <p>Round anchors and logs will be listed here for public verification.</p>
+          {!!log.length && (
+            <pre style={{ whiteSpace: 'pre-wrap', background: '#111', color: '#eee', padding: 12, borderRadius: 6 }}>
+              {log.join('\n')}
+            </pre>
+          )}
+        </section>
+      )}
       <style jsx global>{`
         :root { --h1: 200; --h2: 330; --bg:#0b0f14; --glass:rgba(255,255,255,0.06); }
         body { background:
