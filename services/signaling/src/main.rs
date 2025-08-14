@@ -20,6 +20,7 @@ use tower_http::cors::{CorsLayer, Any};
 use std::collections::{HashMap, HashSet};
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
+use std::time::{Instant};
 
 async fn health() -> &'static str { "ok" }
 
@@ -56,6 +57,8 @@ static MATCH_STARTED: Lazy<Mutex<HashSet<String>>> = Lazy::new(|| Mutex::new(Has
 static TURN_RESOLVED: Lazy<Mutex<HashSet<String>>> = Lazy::new(|| Mutex::new(HashSet::new()));
 // shared turn state per match: (current_turn, deadline_ms_epoch)
 static TURN_STATE: Lazy<Mutex<HashMap<String, (u32, i64)>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+// last activity per match to support TTL sweep
+static MATCH_LAST_SEEN: Lazy<Mutex<HashMap<String, Instant>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 fn clear_match_state(mid: &str) {
     MAILBOXES.lock().unwrap().remove(mid);
@@ -63,6 +66,7 @@ fn clear_match_state(mid: &str) {
     PARTICIPANTS.lock().unwrap().remove(mid);
     MATCH_STARTED.lock().unwrap().remove(mid.to_string().as_str());
     TURN_STATE.lock().unwrap().remove(mid);
+    MATCH_LAST_SEEN.lock().unwrap().remove(mid);
     // remove resolved keys with this prefix
     let mut tr = TURN_RESOLVED.lock().unwrap();
     let pref = format!("{}#", mid);
@@ -116,6 +120,8 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
         p.entry(mid_from_ticket.clone()).or_default().insert(did.clone());
     }
 
+    // touch last seen for this match
+    MATCH_LAST_SEEN.lock().unwrap().insert(mid_from_ticket.clone(), Instant::now());
     // Initialize or replay current turn/deadline for this match
     if let Some(mid) = match_id_for_session.clone() {
         let (t, d) = {
@@ -158,6 +164,7 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
                 let Ok(msg) = res else { break };
                 // any inbound frame counts as liveness
                 last_seen = std::time::Instant::now();
+                if let Some(mid) = &match_id_for_session { MATCH_LAST_SEEN.lock().unwrap().insert(mid.clone(), Instant::now()); }
                 match msg {
             Message::Text(txt) => {
                 tracing::info!(incoming = %txt, "ws text");
@@ -476,22 +483,39 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().with_env_filter("info").init();
-
     let app = Router::new()
         .route("/healthz", get(health))
-        .route("/ws", get(ws_handler))
-        .route("/ready", post(|| async { "ok" }))
-        .route("/admin/reset", post(admin_reset))
-        .route("/admin/state", get(admin_state))
+        .route("/ws", get(|ws: WebSocketUpgrade, q: Query<WsAuth>| async move { ws_handler(q, ws).await }))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any));
 
-    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
+    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8081);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    tracing_subscriber::fmt().with_env_filter("info").init();
     tracing::info!(%addr, "signaling listening");
+
+    // TTL sweeper for matches to remove ghosts
+    let ttl_ms: u64 = std::env::var("MATCH_TTL_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(120_000);
+    let sweep_ms: u64 = std::env::var("SWEEP_INTERVAL_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(sweep_ms));
+        loop {
+            ticker.tick().await;
+            let now = Instant::now();
+            let mut last = MATCH_LAST_SEEN.lock().unwrap();
+            let mids: Vec<String> = last.iter()
+                .filter(|(_, t)| now.duration_since(**t).as_millis() >= ttl_ms as u128)
+                .map(|(k, _)| k.clone())
+                .collect();
+            drop(last);
+            for m in mids { clear_match_state(&m); tracing::info!(match_id = %m, "swept stale match"); }
+        }
+    });
+
     let listener = TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
+
+// removed duplicate legacy main
 
 // --- Admin endpoints ---
 #[derive(Debug, serde::Deserialize)]

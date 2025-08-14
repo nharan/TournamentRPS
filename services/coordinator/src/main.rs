@@ -8,6 +8,7 @@ use reqwest::Client as HttpClient;
 use tower_http::cors::{CorsLayer, Any};
 use std::sync::Mutex;
 use once_cell::sync::Lazy;
+use std::time::Instant;
 
 #[derive(Debug, Deserialize)]
 struct TicketRequest { did: String, match_id: String }
@@ -102,8 +103,11 @@ async fn main() {
 }
 
 // --- Simple in-memory pairing queue (demo only) ---
-static WAITING: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+// Track waiting DID with timestamp to avoid ghosts
+static WAITING: Lazy<Mutex<Option<(String, Instant)>>> = Lazy::new(|| Mutex::new(None));
 static ASSIGNMENTS: Lazy<Mutex<std::collections::HashMap<String, ReadyForRoundResp>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
+// Track assignment insertion time for TTL pruning
+static ASSIGNMENT_TS: Lazy<Mutex<std::collections::HashMap<String, Instant>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 static ENTRANTS: Lazy<Mutex<std::collections::HashMap<String, Vec<String>>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 static HANDLES: Lazy<Mutex<std::collections::HashMap<String, String>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
@@ -125,10 +129,10 @@ async fn queue_ready(Json(req): Json<QueueReadyReq>) -> Json<QueueReadyResp> {
         return Json(QueueReadyResp::ASSIGN { match_id: a.match_id, role: a.role, peer: a.peer, ticket: a.ticket });
     }
     let mut w = WAITING.lock().unwrap();
-    if let Some(other) = w.take() {
+    if let Some((other, _since)) = w.take() {
         // If the other waiting DID is the same as this requester, keep waiting
         if other == req.did {
-            *w = Some(other);
+            *w = Some((other, Instant::now()));
             return Json(QueueReadyResp::WAIT);
         }
         // Pair other with this did (canonical p1/p2 by sort for match_id stability)
@@ -149,6 +153,7 @@ async fn queue_ready(Json(req): Json<QueueReadyReq>) -> Json<QueueReadyResp> {
                 peer: serde_json::json!({"did": p2, "handle": p2h}),
                 ticket: t1,
             });
+            ASSIGNMENT_TS.lock().unwrap().insert(other.clone(), Instant::now());
             // Return assignment for current requester as P2
             let resp = QueueReadyResp::ASSIGN { match_id, role: "P2".into(), peer: serde_json::json!({"did": p1, "handle": p1h}), ticket: t2 };
             return Json(resp);
@@ -159,13 +164,14 @@ async fn queue_ready(Json(req): Json<QueueReadyReq>) -> Json<QueueReadyResp> {
                 peer: serde_json::json!({"did": p1, "handle": p1h}),
                 ticket: t2,
             });
+            ASSIGNMENT_TS.lock().unwrap().insert(other.clone(), Instant::now());
             // Return assignment for current requester as P1
             let resp = QueueReadyResp::ASSIGN { match_id, role: "P1".into(), peer: serde_json::json!({"did": p2, "handle": p2h}), ticket: t1 };
             return Json(resp);
         }
     } else {
         // Normal play mode (no AI auto-fill): wait for a peer
-        *w = Some(req.did);
+        *w = Some((req.did, Instant::now()));
         return Json(QueueReadyResp::WAIT);
     }
 }
@@ -266,7 +272,7 @@ async fn admin_reset(Json(req): Json<AdminResetReq>) -> Json<AdminResetResp> {
         // If waiting contains one of these DIDs, clear it
         {
             let mut w = WAITING.lock().unwrap();
-            if let Some(cur) = &*w { if dids.iter().any(|d| d == cur) { *w = None; } }
+            if let Some((cur, _)) = &*w { if dids.iter().any(|d| d == cur) { *w = None; } }
         }
     } else {
         // Full wipe
