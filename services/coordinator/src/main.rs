@@ -16,6 +16,7 @@ struct TicketRequest { did: String, match_id: String }
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims { sub: String, mid: String, exp: usize, iat: usize }
 
+/// Issues a short‑lived JWT "ticket" for a specific DID and match id.
 async fn issue_ticket(Json(req): Json<TicketRequest>) -> Json<serde_json::Value> {
     let key = std::env::var("TICKET_SECRET").unwrap_or_else(|_| "dev-secret-change-me".into());
     let now = Utc::now();
@@ -41,6 +42,8 @@ struct ReadyForRoundResp {
     ticket: String,
 }
 
+/// Demo pairing: forms a deterministic match id and issues a READY assignment
+/// along with a ticket. Also posts a stub round anchor to the writer service.
 async fn ready_for_round(Json(req): Json<ReadyForRoundReq>) -> Json<ReadyForRoundResp> {
     // Deterministic stub match id and role for MVP
     let match_id = format!("{}-r{}-{}", req.tid, req.round, &req.did);
@@ -66,6 +69,7 @@ async fn ready_for_round(Json(req): Json<ReadyForRoundReq>) -> Json<ReadyForRoun
     Json(resp)
 }
 
+/// Helper to mint HS256 JWT for a participant DID and match id.
 fn issue_jwt(did: &str, match_id: &str) -> String {
     let key = std::env::var("TICKET_SECRET").unwrap_or_else(|_| "dev-secret-change-me".into());
     let now = Utc::now();
@@ -79,6 +83,7 @@ fn issue_jwt(did: &str, match_id: &str) -> String {
     encode(&Header::default(), &claims, &EncodingKey::from_secret(key.as_bytes())).unwrap()
 }
 
+/// Service entrypoint: HTTP routes for tickets, queue, tournament, admin.
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().with_env_filter("info").init();
@@ -121,6 +126,8 @@ enum QueueReadyResp {
     ASSIGN { match_id: String, role: String, peer: serde_json::Value, ticket: String },
 }
 
+/// Simple in‑memory pairing queue. Returns WAIT until a second player arrives,
+/// then emits an ASSIGN for both.
 async fn queue_ready(Json(req): Json<QueueReadyReq>) -> Json<QueueReadyResp> {
     // Record/refresh handle if provided (normal mode sign-in path)
     if let Some(h) = req.handle.as_ref() { HANDLES.lock().unwrap().insert(req.did.clone(), h.clone()); }
@@ -183,6 +190,7 @@ struct RegisterReq { tid: String, did: String, handle: Option<String> }
 #[derive(Debug, Serialize)]
 struct RegisterResp { ok: bool }
 
+/// Records a DID for a tournament id (tid) and stores handle if provided.
 async fn register(Json(req): Json<RegisterReq>) -> Json<RegisterResp> {
     let mut e = ENTRANTS.lock().unwrap();
     let list = e.entry(req.tid).or_default();
@@ -198,6 +206,7 @@ struct StartRoundReq { tid: String, round: u32 }
 #[derive(Debug, Serialize)]
 struct StartRoundResp { ok: bool, pairs: usize }
 
+/// Creates deterministic P1/P2 assignments for entrants of a given tid/round.
 async fn start_round(Json(req): Json<StartRoundReq>) -> Json<StartRoundResp> {
     let mut e = ENTRANTS.lock().unwrap();
     let mut list = e.remove(&req.tid).unwrap_or_default();
@@ -235,6 +244,7 @@ struct AssignmentQuery { tid: String, did: String }
 #[serde(tag = "status")]
 enum AssignmentResp { WAIT, ASSIGN { match_id: String, role: String, peer: serde_json::Value, ticket: String } }
 
+/// Polls for a prepared assignment for the given DID. Returns WAIT if none.
 async fn assignment(Query(q): Query<AssignmentQuery>) -> Json<AssignmentResp> {
     if let Some(a) = ASSIGNMENTS.lock().unwrap().remove(&q.did) {
         Json(AssignmentResp::ASSIGN { match_id: a.match_id, role: a.role, peer: a.peer, ticket: a.ticket })
@@ -250,6 +260,7 @@ struct AdminResetReq { tid: Option<String> }
 #[derive(Debug, Serialize)]
 struct AdminResetResp { ok: bool, cleared_dids: usize, cleared_pairs: usize }
 
+/// Admin: clears entrants/handles/assignments for a tid, or wipes all if none.
 async fn admin_reset(Json(req): Json<AdminResetReq>) -> Json<AdminResetResp> {
     // Collect DIDs to clear if tid provided
     let mut cleared_dids = 0usize;
@@ -295,6 +306,7 @@ struct AdminStateResp {
     handles: usize,
 }
 
+/// Admin: returns counts of entrants, waiting flag, assignments, and handles.
 async fn admin_state() -> Json<AdminStateResp> {
     let entrants_tids = ENTRANTS.lock().unwrap().len();
     let total_entrants: usize = ENTRANTS

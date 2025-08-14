@@ -1,3 +1,7 @@
+/**
+ * Main app page. Handles Bluesky auth, matchmaking, WS/WebRTC flows,
+ * and a minimal UI. The Audit panel renders only when `debug` is true.
+ */
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { BskyAgent } from '@atproto/api';
@@ -33,6 +37,7 @@ export default function HomePage() {
   const [clockSkewMs, setClockSkewMs] = useState<number>(0); // serverNow - localNow
   const findingRef = useRef<boolean>(false);
   const shortDid = (d?: string | null) => d ? ((d.startsWith('did:plc:') ? d.slice(8, 14) : d.slice(0, 6)) + '…') : '-';
+  /** Extract the numeric round from a match id like "...-r7-...". */
   const roundFromMid = useMemo(() => {
     if (!matchId) return null;
     const m = matchId.match(/-r(\d+)/);
@@ -73,6 +78,7 @@ export default function HomePage() {
     return () => clearInterval(t);
   }, [deadline, clockSkewMs]);
 
+  /** Sign in with a Bluesky App Password and cache DID/handle. */
   const signIn = async () => {
     setAuthErr(null);
     const identifier = idInput.trim();
@@ -94,6 +100,7 @@ export default function HomePage() {
     }
   };
 
+  /** Single-player demo path: request a ticket then connect to signaling WS. */
   const connectWs = async () => {
     if (ws || !session) return;
     try {
@@ -171,7 +178,7 @@ export default function HomePage() {
     }
   };
 
-  // Registration and auto-pairing
+  /** Tournament mode: register this user and then poll for assignment. */
   const registerEntrant = async () => {
     if (!session) return;
     const res = await fetch(`${coordBase}/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tid: 'demo', did: session.did, handle: session.handle }) });
@@ -180,6 +187,7 @@ export default function HomePage() {
     pollAssignment();
   };
 
+  /** Poll the coordinator for an ASSIGN entry, then connect via ticket. */
   const pollAssignment = async () => {
     if (!session) return;
     for (let i = 0; i < 120; i++) {
@@ -194,6 +202,7 @@ export default function HomePage() {
     setLog((prev) => ['assignment timeout', ...prev]);
   };
 
+  /** Establish WS and WebRTC DataChannel using an ASSIGN payload. */
   const connectWithAssignment = async (assign: any) => {
     setMatchId(assign.match_id); setRole(assign.role); setPeerDid(assign?.peer?.did || null); setPeerHandle(assign?.peer?.handle || null);
     const myRole: 'P1'|'P2' = assign.role;
@@ -309,7 +318,7 @@ export default function HomePage() {
     setWs(socket);
   };
 
-  // 2P: Connect via coordinator queue and establish WebRTC DataChannel
+  /** Normal mode: queue for an opponent until assigned, then connect. */
   const connect2P = async () => {
     if (ws || !session || findingRef.current) return;
     findingRef.current = true;
@@ -346,6 +355,7 @@ export default function HomePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [MODE, session, ws]);
 
+  /** Clear all ephemeral client state for a fresh match. */
   const resetLocalState = () => {
     setMatchId(null);
     setRole(null);
@@ -363,6 +373,7 @@ export default function HomePage() {
     processedKeyedRef.set.clear?.();
   };
 
+  /** Leave current match and reset local state and transports. */
   const leaveMatch = async () => {
     try {
       if (ws) { try { ws.close(); } catch {} }
@@ -374,8 +385,10 @@ export default function HomePage() {
     }
   };
 
+  /** Leave and immediately requeue for a new opponent. */
   const playAgain = async () => { await leaveMatch(); await connect2P(); };
 
+  /** Send this turn's reveal to the signaling server. */
   const sendReveal = async (move: 'R' | 'P' | 'S') => {
     if (!ws || !matchId || !turn) return;
     const nonce = Math.random().toString(36).slice(2);

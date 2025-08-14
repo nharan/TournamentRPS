@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use serde::{Deserialize, Serialize};
 
+/// Service entrypoint: accepts round anchors and logs them.
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().with_env_filter("info").init();
@@ -31,6 +32,7 @@ struct RoundAnchorReq {
 #[derive(Debug, Serialize)]
 struct RoundAnchorResp { ok: bool }
 
+/// Stub endpoint for recording a round anchor. Currently logs and returns ok.
 async fn round_anchor(Json(req): Json<RoundAnchorReq>) -> Json<RoundAnchorResp> {
     tracing::info!(tid = %req.tid, round = %req.round, alive_root = %req.aliveRoot, pairing_seed = %req.pairingSeed, merkle_root = %req.merkleRoot, posted_at = %req.postedAt, "roundAnchor received");
     Json(RoundAnchorResp { ok: true })

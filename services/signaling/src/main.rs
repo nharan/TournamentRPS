@@ -22,8 +22,11 @@ use once_cell::sync::Lazy;
 use std::sync::Mutex;
 use std::time::{Instant};
 
+/// Health probe for container and local dev. Returns "ok".
 async fn health() -> &'static str { "ok" }
 
+/// Authenticates the WebSocket upgrade using a JWT `ticket` and upgrades to the
+/// match relay socket. Rejects with 401 if the ticket is missing or invalid.
 async fn ws_handler(Query(q): Query<WsAuth>, ws: WebSocketUpgrade) -> axum::response::Response {
     let Some(t) = q.ticket else { return (axum::http::StatusCode::UNAUTHORIZED, "missing ticket").into_response() };
     let Some(claims) = verify_ticket(&t) else { return (axum::http::StatusCode::UNAUTHORIZED, "invalid ticket").into_response() };
@@ -38,6 +41,7 @@ struct WsAuth { ticket: Option<String> }
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims { sub: String, mid: String, exp: usize, iat: usize }
 
+/// Verifies an HS256 ticket using `TICKET_SECRET`. Returns JWT claims if valid.
 fn verify_ticket(ticket: &str) -> Option<Claims> {
     let key = std::env::var("TICKET_SECRET").unwrap_or_else(|_| "dev-secret-change-me".into());
     jsonwebtoken::decode::<Claims>(ticket, &DecodingKey::from_secret(key.as_bytes()), &Validation::new(Algorithm::HS256)).ok().map(|d| d.claims)
@@ -60,6 +64,7 @@ static TURN_STATE: Lazy<Mutex<HashMap<String, (u32, i64)>>> = Lazy::new(|| Mutex
 // last activity per match to support TTL sweep
 static MATCH_LAST_SEEN: Lazy<Mutex<HashMap<String, Instant>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Clears all in-memory state for a given match id. Used on disconnect/timeouts.
 fn clear_match_state(mid: &str) {
     MAILBOXES.lock().unwrap().remove(mid);
     REVEALS.lock().unwrap().remove(mid);
@@ -74,6 +79,9 @@ fn clear_match_state(mid: &str) {
     for k in keys { tr.remove(&k); }
 }
 
+/// Core per-connection loop. Registers the socket with the per-match mailbox,
+/// manages turn state, resolves reveals, broadcasts TURN_START/RESULT, and
+/// ends the match on first to 5 or disconnect.
 async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: String) {
     let mut p1_score: u32 = 0;
     let mut p2_score: u32 = 0;
@@ -481,6 +489,7 @@ async fn handle_socket(mut socket: WebSocket, did: String, mid_from_ticket: Stri
     }
 }
 
+/// Service entrypoint: configures routes, CORS, TTL sweeper, and Axum server.
 #[tokio::main]
 async fn main() {
     let app = Router::new()
@@ -524,6 +533,8 @@ struct AdminResetReq { match_id: Option<String> }
 #[derive(Debug, serde::Serialize)]
 struct AdminResetResp { ok: bool, cleared_matches: usize }
 
+/// Admin endpoint to reset state. If `match_id` provided, clears only that match;
+/// otherwise wipes all in-memory maps.
 async fn admin_reset(axum::Json(req): axum::Json<AdminResetReq>) -> axum::Json<AdminResetResp> {
     if let Some(mid) = req.match_id {
         MAILBOXES.lock().unwrap().remove(&mid);
@@ -552,6 +563,7 @@ async fn admin_reset(axum::Json(req): axum::Json<AdminResetReq>) -> axum::Json<A
 #[derive(Debug, serde::Serialize)]
 struct AdminStateResp { matches: usize, participants: usize, pending_turn_states: usize }
 
+/// Admin endpoint to inspect current in-memory counts for matches/participants.
 async fn admin_state() -> axum::Json<AdminStateResp> {
     let matches = MAILBOXES.lock().unwrap().len();
     let participants: usize = PARTICIPANTS.lock().unwrap().values().map(|s| s.len()).sum();

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use rand::{RngCore, SeedableRng};
 use rand::rngs::StdRng;
 
+/// Service entrypoint: exposes `/ai_move` that returns a seeded random R/P/S.
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().with_env_filter("info").init();
@@ -26,6 +27,8 @@ struct AiMoveReq { match_id: String, turn: u32 }
 #[derive(Debug, Serialize)]
 struct AiMoveResp { rps: char, vrfOutput: String, vrfProof: String, drandEpoch: u64 }
 
+/// Returns a pseudo‑random R/P/S for a (match_id, turn) using a deterministic
+/// seed, plus placeholder VRF/drand fields for future integration.
 async fn ai_move(Json(req): Json<AiMoveReq>) -> Json<AiMoveResp> {
     // sample uniformly R/P/S from seeded RNG so it is not always 'R'
     let seed = fxhash::hash64(format!("{}:{}", req.match_id, req.turn).as_bytes());

@@ -18,6 +18,8 @@ enum Role { P1, P2 }
 #[derive(Clone)]
 struct AssignInfo { match_id: String, ticket: String, role: Role }
 
+/// Polls the coordinator `/queue_ready` until an ASSIGN is returned or a
+/// timeout occurs. Produces the match id, ticket, and role for the player.
 async fn queue_until_assigned(http: &Client, name: &str, did: &str, cfg: &SimConfig) -> Result<AssignInfo> {
     let mut ticket = String::new();
     let mut match_id = String::new();
@@ -45,6 +47,8 @@ async fn queue_until_assigned(http: &Client, name: &str, did: &str, cfg: &SimCon
     Ok(AssignInfo { match_id, ticket, role: role.unwrap() })
 }
 
+/// Drives a single simulated player: waits for TURN_START, sends REVEAL for
+/// each scripted turn, and validates TURN_RESULT against expected outcome.
 async fn run_player(name: &str, cfg: SimConfig, planned_moves: &[(&'static str, &'static str)], preassign: Option<AssignInfo>) -> Result<()> {
     let http = Client::new();
     let did = format!("did:plc:{}", name);
@@ -121,6 +125,7 @@ async fn run_player(name: &str, cfg: SimConfig, planned_moves: &[(&'static str, 
     Ok(())
 }
 
+/// Computes the winner role for canonical RPS rules. None => DRAW.
 fn expected_winner(p1: &str, p2: &str) -> Option<Role> {
     // Returns Some(winner_role) or None for draw
     match (p1, p2) {
@@ -130,6 +135,8 @@ fn expected_winner(p1: &str, p2: &str) -> Option<Role> {
     }
 }
 
+/// Simulator entrypoint: runs a deterministic 2‑player match and fails fast on
+/// timeouts or unexpected results.
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();

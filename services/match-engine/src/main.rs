@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use hex::ToHex;
 
+/// Service entrypoint: exposes commit/reveal helpers for testing commit‑reveal.
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().with_env_filter("info").init();
@@ -19,6 +20,7 @@ struct CommitReq { match_id: String, did: String, turn: u32, move_: String, nonc
 #[derive(Debug, Serialize)]
 struct CommitResp { ok: bool, commit: String }
 
+/// Computes the canonical commit hash for (move, nonce, turn, match_id, did).
 async fn commit(Json(req): Json<CommitReq>) -> Json<CommitResp> {
     let mut hasher = Sha256::new();
     hasher.update(req.move_.as_bytes());
@@ -36,6 +38,7 @@ struct RevealReq { commit: String, match_id: String, did: String, turn: u32, mov
 #[derive(Debug, Serialize)]
 struct RevealResp { ok: bool, valid: bool }
 
+/// Verifies a reveal against a provided commit by recomputing the hash.
 async fn reveal(Json(req): Json<RevealReq>) -> Json<RevealResp> {
     let mut hasher = Sha256::new();
     hasher.update(req.move_.as_bytes());
