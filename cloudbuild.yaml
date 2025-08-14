@@ -9,7 +9,23 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args: ['build','-t','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/signaling:latest','-f','services/signaling/Dockerfile','.']
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build','-t','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/web:latest','-f','apps/web/Dockerfile','.']
+    args:
+      - build
+      - -t
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/web:latest'
+      - --build-arg
+      - SIGNALING_WS=${_SIGNALING_WS}
+      - --build-arg
+      - COORDINATOR_HTTP=${_COORDINATOR_HTTP}
+      - --build-arg
+      - MATCH_ENGINE_HTTP=${_MATCH_ENGINE_HTTP}
+      - --build-arg
+      - ATPROTO_APPVIEW_HOST=${_ATPROTO_APPVIEW_HOST}
+      - --build-arg
+      - ATPROTO_PDS_URL=${_ATPROTO_PDS_URL}
+      - -f
+      - apps/web/Dockerfile
+      - .
 
   # Push images
   - name: 'gcr.io/cloud-builders/docker'
@@ -26,6 +42,11 @@ steps:
 substitutions:
   _REGION: 'us-central1'
   _REPO: 'rps'
+  _SIGNALING_WS: 'wss://signaling.peace.zone/ws'
+  _COORDINATOR_HTTP: 'https://coordinator.peace.zone'
+  _MATCH_ENGINE_HTTP: 'https://match.peace.zone'
+  _ATPROTO_APPVIEW_HOST: 'api.bsky.app'
+  _ATPROTO_PDS_URL: 'https://bsky.social'
 
 images:
   - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/fairness:latest'
