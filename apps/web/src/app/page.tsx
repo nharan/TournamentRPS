@@ -47,6 +47,7 @@ export default function HomePage() {
 
   const ICONS: Record<'R'|'P'|'S', string> = { R: '👊', P: '✋', S: '✌️' };
   const LABELS: Record<'R'|'P'|'S', string> = { R: 'Rock', P: 'Paper', S: 'Scissors' };
+  const BEATS: Record<'R'|'P'|'S', 'R'|'P'|'S'> = { R: 'S', P: 'R', S: 'P' };
   type AiEngine = {
     getNextMove: (playerInput: RPS | null) => RPS;
     reset: () => void;
@@ -482,6 +483,25 @@ export default function HomePage() {
     setSentByTurn((prev) => ({ ...prev, [turn]: { move, at: Date.now() } }));
   };
 
+  const showPeek = () => {
+    if (!aiPlan) return;
+    const botName = aiBot?.name || 'AI';
+    const ai = aiPlan.aiMove as 'R'|'P'|'S';
+    const pred = aiPlan.predicts as 'R'|'P'|'S';
+    const other = BEATS[ai];
+    const validPreds = new Set<'R'|'P'|'S'>([ai, other]);
+    if (ai === pred) {
+      setPeekText(`🤖 ${botName} wants to play ${ICONS[ai]} because it predicts you will either play ${ICONS[ai]} or ${ICONS[other]}`);
+      return;
+    }
+    if (validPreds.has(pred)) {
+      setPeekText(`🤖 ${botName} wants to play ${ICONS[ai]} because it predicts you will play ${ICONS[pred]}`);
+      return;
+    }
+    // Fallback if predictor and move appear inconsistent: explain not-lose intent set
+    setPeekText(`🤖 ${botName} wants to play ${ICONS[ai]} because it predicts you will either play ${ICONS[ai]} or ${ICONS[other]}`);
+  };
+
   return (
     <main className="pz-app">
       <h1>Rock Paper Scissors</h1>
@@ -603,7 +623,7 @@ export default function HomePage() {
               <MoveButton m="P" disabled={(!aiMode && (!ws || !matchId || !turn)) || (aiMode && !turn)} onClick={() => sendReveal('P')} />
               <MoveButton m="S" disabled={(!aiMode && (!ws || !matchId || !turn)) || (aiMode && !turn)} onClick={() => sendReveal('S')} />
               {aiMode && !!aiPlan && (
-                <button className="btn" onClick={() => setPeekText(`🤖 ${(aiBot?.name || 'AI')} is thinking: ${ICONS[aiPlan.aiMove]} because it predicts you will play ${ICONS[aiPlan.predicts]}`)} style={{ gridColumn: '1 / -1', justifySelf: 'start' }}>Peek</button>
+                <button className="btn" onClick={showPeek} style={{ gridColumn: '1 / -1', justifySelf: 'start' }}>Peek</button>
               )}
             </div>
             {aiMode && !!peekText && (
