@@ -517,6 +517,9 @@ export default function HomePage() {
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
               <span>Turn: <strong>{turn || '-'}</strong></span>
               {!aiMode && <span style={{ fontSize: 22 }}>Time left: <strong>{secondsLeft}s</strong></span>}
+              {aiMode && (
+                <button className="btn card" onClick={startAiMatch} aria-label="Start a new AI game">↻ New Game</button>
+              )}
             </div>
             {/* HUD / Scorecards */}
             <div style={{ display: 'flex', gap: 14, alignItems: 'stretch', flexWrap: 'wrap' }}>
@@ -558,7 +561,7 @@ export default function HomePage() {
                   <div style={{ textAlign: 'center', fontWeight: 700, opacity: 0.9 }}>ROUND LOG</div>
                   <div style={{ textAlign: 'right', fontWeight: 700, opacity: 0.9 }}>{aiMode ? 'OPP (AI)' : `OPP (${peerHandle || (peerDid || '-')})`}</div>
                 </div>
-                {turnsTable.map((row) => {
+                {[...turnsTable].sort((a,b)=>b.turn-a.turn).map((row) => {
                   const icon = row.result === 'WIN' ? '✓' : row.result === 'LOSE' ? '✕' : '≡';
                   const color = row.result === 'WIN' ? '#66d17a' : row.result === 'LOSE' ? '#e57373' : '#f6c453';
                   const timeoutText = row.timeout === 'NONE' ? '' : row.timeout === 'YOU' ? 'timeout: you' : 'timeout: opponent';
