@@ -47,6 +47,17 @@ export default function HomePage() {
 
   const ICONS: Record<'R'|'P'|'S', string> = { R: '👊', P: '✋', S: '✌️' };
   const LABELS: Record<'R'|'P'|'S', string> = { R: 'Rock', P: 'Paper', S: 'Scissors' };
+  type AiEngine = {
+    getNextMove: (playerInput: RPS | null) => RPS;
+    reset: () => void;
+    simulateNext?: (playerInput: RPS | null) => { aiMove: RPS; predicts: RPS };
+    getLastPrediction?: () => RPS | null;
+  };
+  type BotSpec = { id: string; name: string; avatar: string; make: () => AiEngine; blurb?: string; difficulty?: 'Beginner'|'Intermediate'|'Advanced'|'Adaptive' };
+  const makeIocaine = (): AiEngine => new IocainePowderAI();
+  const BOTS: BotSpec[] = [
+    { id: 'wally', name: 'Wally', avatar: '/bots/wally.png', make: makeIocaine, blurb: 'Pattern‑matching trickster', difficulty: 'Intermediate' },
+  ];
   const MoveChip = ({ move, align = 'left' as 'left'|'right' }: { move: 'R'|'P'|'S'|'-'; align?: 'left'|'right' }) => {
     const label = (move || '-') as 'R'|'P'|'S'|'-';
     const bg = label === 'R' ? '#2b1d1d' : label === 'P' ? '#1d2431' : label === 'S' ? '#2b2a1d' : '#1f1f1f';
@@ -362,11 +373,14 @@ export default function HomePage() {
     findingRef.current = false;
   };
 
-  // Normal mode: auto-queue/connect upon sign-in
+  // Normal mode: auto-queue/connect upon sign-in (skip when in AI mode)
   useEffect(() => {
-    if (MODE === 'normal' && session && !ws) {
-      connect2P();
-    }
+    // defer read of aiMode until after its declaration via a microtask
+    Promise.resolve().then(() => {
+      if (MODE === 'normal' && session && !ws && !aiMode) {
+        connect2P();
+      }
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [MODE, session, ws]);
 
@@ -390,23 +404,28 @@ export default function HomePage() {
 
   // --- AI mode (single-player) ---
   const [aiMode, setAiMode] = useState<boolean>(false);
-  const aiRef = useRef<IocainePowderAI | null>(null);
+  const aiRef = useRef<AiEngine | null>(null);
   const [aiPlan, setAiPlan] = useState<{ aiMove: RPS; predicts: RPS } | null>(null);
   const [peekText, setPeekText] = useState<string>('');
+  const [aiBot, setAiBot] = useState<BotSpec | null>(null);
+  const [showBotPicker, setShowBotPicker] = useState<boolean>(false);
 
-  const startAiMatch = () => {
+  const startAiMatch = (bot?: BotSpec) => {
     setAiMode(true);
     resetLocalState();
-    setPeerHandle('AI');
+    const chosen = bot || BOTS[0];
+    setAiBot(chosen);
+    setPeerHandle(chosen?.name || 'AI');
     setRole('P1');
     setMatchId('local-ai');
     setTurn(1);
-    const engine = new IocainePowderAI();
+    const engine = (chosen?.make || makeIocaine)();
     aiRef.current = engine;
     const first = engine.getNextMove(null);
-    const predicts = (engine.lastPredict || 'R') as RPS;
+    const predicts = (engine.getLastPrediction?.() || 'R') as RPS;
     setAiPlan({ aiMove: first, predicts });
     setPeekText('');
+    setShowBotPicker(false);
   };
 
   const stopAiMatch = async () => {
@@ -414,6 +433,7 @@ export default function HomePage() {
     aiRef.current = null;
     setAiPlan(null);
     setPeekText('');
+    setAiBot(null);
     await leaveMatch();
   };
 
@@ -448,7 +468,7 @@ export default function HomePage() {
       setSentByTurn((prev) => ({ ...prev, [turn]: { move: yourMove, at: Date.now() } }));
       // prepare next
       const nextMove = aiRef.current.getNextMove(yourMove);
-      const predicts = (aiRef.current.lastPredict || 'R') as RPS;
+      const predicts = (aiRef.current.getLastPrediction?.() || 'R') as RPS;
       setAiPlan({ aiMove: nextMove, predicts });
       setTurn((t) => t + 1);
       setPeekText('');
@@ -465,7 +485,7 @@ export default function HomePage() {
   return (
     <main className="pz-app">
       <h1>Rock Paper Scissors</h1>
-      {!session ? (
+      {!session && !aiMode ? (
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             <label htmlFor="handle">Bluesky handle</label>
@@ -475,7 +495,26 @@ export default function HomePage() {
             <label htmlFor="apppw">App Password (not your main password)</label>
             <input id="apppw" type="password" placeholder="xxxx-xxxx-xxxx-xxxx" value={pwInput} onChange={e => setPwInput(e.target.value)} style={{ padding: 10, minWidth: 240 }} />
           </div>
-        <button onClick={signIn} style={{ padding: 12 }}>Sign in with Bluesky</button>
+          <button onClick={signIn} style={{ padding: 12 }}>Sign in with Bluesky</button>
+          <button className="btn" onClick={() => setShowBotPicker((s)=>!s)} style={{ marginLeft: 8 }}>Play Bots</button>
+          {showBotPicker && (
+            <div style={{ width: '100%', marginTop: 12 }}>
+              <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+                {BOTS.map(b => (
+                  <button key={b.id} className="btn card" onClick={() => startAiMatch(b)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <img src={b.avatar} alt={b.name} width={36} height={36} style={{ borderRadius: 999, background: '#233' }} />
+                      <div style={{ textAlign: 'left' }}>
+                        <div style={{ fontWeight: 800 }}>{b.name}</div>
+                        <div style={{ opacity: .8, fontSize: 12 }}>{b.blurb || 'Bot'}</div>
+                      </div>
+                    </div>
+                    <div style={{ opacity: .8, fontSize: 12 }}>{b.difficulty || 'Custom'}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {authErr && <div style={{ color: 'tomato', width: '100%' }}>{authErr}</div>}
         </div>
       ) : (
@@ -493,12 +532,12 @@ export default function HomePage() {
           }}>
             <div style={{ display: 'flex', flexDirection: 'column' }}>
               <div style={{ fontSize: 12, opacity: 0.8 }}>You</div>
-              <div style={{ fontWeight: 700 }}>{session.handle}</div>
+              <div style={{ fontWeight: 700 }}>{session?.handle || 'Guest'}</div>
             </div>
             <div style={{ opacity: 0.7 }}>vs</div>
             <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'right' }}>
               <div style={{ fontSize: 12, opacity: 0.8 }}>Opponent</div>
-              <div style={{ fontWeight: 700 }}>{aiMode ? 'AI' : (peerHandle || (peerDid || '-'))}</div>
+              <div style={{ fontWeight: 700 }}>{aiMode ? (aiBot?.name || 'AI') : (peerHandle || (peerDid || '-'))}</div>
             </div>
           </div>
           <div style={{ display: 'flex', gap: 12, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -507,25 +546,49 @@ export default function HomePage() {
             ) : (
               <>
                 <span style={{ opacity: 0.8 }}>Mode: {aiMode ? 'Single-player (AI)' : 'Normal (auto-match)'}</span>
-                {!aiMode && !ws && <button className="btn" onClick={connect2P}>Find opponent</button>}
+                {!aiMode && !ws && session && <button className="btn" onClick={connect2P}>Find opponent</button>}
                 {!aiMode && !!ws && <button className="btn" onClick={leaveMatch}>Leave match</button>}
                 {!aiMode && <button className="btn" onClick={playAgain}>Play again</button>}
-                {!aiMode && <button className="btn" onClick={startAiMatch}>Play vs AI</button>}
-                {aiMode && <button className="btn" onClick={stopAiMatch}>Back to PvP</button>}
+                {!aiMode && <button className="btn" onClick={() => setShowBotPicker((s)=>!s)}>Play Bots</button>}
+                {aiMode && (
+                  <>
+                    <button className="btn" onClick={() => { setShowBotPicker(true); setAiMode(false); setAiBot(null); resetLocalState(); }}>Change Bot</button>
+                    <button className="btn" onClick={() => { stopAiMatch(); }}>Back to Login</button>
+                  </>
+                )}
+                {showBotPicker && (
+                  <div style={{ width: '100%' }}>
+                    <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', marginTop: 10 }}>
+                      {BOTS.map(b => (
+                        <button key={b.id} className="btn card" onClick={() => { startAiMatch(b); }} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                            <img src={b.avatar} alt={b.name} width={36} height={36} style={{ borderRadius: 999, background: '#233' }} />
+                            <div style={{ textAlign: 'left' }}>
+                              <div style={{ fontWeight: 800 }}>{b.name}</div>
+                              <div style={{ opacity: .8, fontSize: 12 }}>{b.blurb || 'Bot'}</div>
+                            </div>
+                          </div>
+                          <div style={{ opacity: .8, fontSize: 12 }}>{b.difficulty || 'Custom'}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {aiMode && session && <button className="btn" onClick={stopAiMatch}>Back to PvP</button>}
               </>
             )}
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
               <span>Turn: <strong>{turn || '-'}</strong></span>
               {!aiMode && <span style={{ fontSize: 22 }}>Time left: <strong>{secondsLeft}s</strong></span>}
               {aiMode && (
-                <button className="btn card" onClick={startAiMatch} aria-label="Start a new AI game">↻ New Game</button>
+                <button className="btn card" onClick={() => startAiMatch()} aria-label="Start a new AI game">↻ New Game</button>
               )}
             </div>
             {/* HUD / Scorecards */}
             <div style={{ display: 'flex', gap: 14, alignItems: 'stretch', flexWrap: 'wrap' }}>
               {(() => {
                 const ties = turnsTable.filter(r => r.result === 'DRAW').length;
-                const oppLabel = aiMode ? 'AI' : 'OPP';
+                const oppLabel = aiMode ? (aiBot?.name || 'AI') : 'OPP';
                 return (
                   <>
                     <div className="stat card"><div className="stat-num">{p1Score}</div><div className="stat-label">YOU</div></div>
@@ -540,7 +603,7 @@ export default function HomePage() {
               <MoveButton m="P" disabled={(!aiMode && (!ws || !matchId || !turn)) || (aiMode && !turn)} onClick={() => sendReveal('P')} />
               <MoveButton m="S" disabled={(!aiMode && (!ws || !matchId || !turn)) || (aiMode && !turn)} onClick={() => sendReveal('S')} />
               {aiMode && !!aiPlan && (
-                <button className="btn" onClick={() => setPeekText(`🤖 AI is thinking: ${ICONS[aiPlan.aiMove]} because it predicts you will play ${ICONS[aiPlan.predicts]}`)} style={{ gridColumn: '1 / -1', justifySelf: 'start' }}>Peek</button>
+                <button className="btn" onClick={() => setPeekText(`🤖 ${(aiBot?.name || 'AI')} is thinking: ${ICONS[aiPlan.aiMove]} because it predicts you will play ${ICONS[aiPlan.predicts]}`)} style={{ gridColumn: '1 / -1', justifySelf: 'start' }}>Peek</button>
               )}
             </div>
             {aiMode && !!peekText && (
@@ -557,9 +620,9 @@ export default function HomePage() {
             {!!turnsTable.length && (
               <div style={{ marginTop: 16 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 10, alignItems: 'center', marginBottom: 6 }}>
-                  <div style={{ fontWeight: 700, opacity: 0.9 }}>YOU ({session.handle})</div>
+                  <div style={{ fontWeight: 700, opacity: 0.9 }}>YOU ({session?.handle || 'Guest'})</div>
                   <div style={{ textAlign: 'center', fontWeight: 700, opacity: 0.9 }}>ROUND LOG</div>
-                  <div style={{ textAlign: 'right', fontWeight: 700, opacity: 0.9 }}>{aiMode ? 'OPP (AI)' : `OPP (${peerHandle || (peerDid || '-')})`}</div>
+                  <div style={{ textAlign: 'right', fontWeight: 700, opacity: 0.9 }}>{aiMode ? `OPP (${aiBot?.name || 'AI'})` : `OPP (${peerHandle || (peerDid || '-')})`}</div>
                 </div>
                 {[...turnsTable].sort((a,b)=>b.turn-a.turn).map((row) => {
                   const icon = row.result === 'WIN' ? '✓' : row.result === 'LOSE' ? '✕' : '≡';

@@ -224,6 +224,10 @@ export class IocainePowderAI {
     return { aiMove, predicts };
   }
 
+  getLastPrediction(): RPS | null {
+    return this.lastPredict;
+  }
+
   clone(): IocainePowderAI {
     const c = new IocainePowderAI();
     c.numPredictor = this.numPredictor;
