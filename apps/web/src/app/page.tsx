@@ -5,6 +5,7 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { BskyAgent } from '@atproto/api';
+import { IocainePowderAI, type RPS } from './ai/IocainePowderAI';
 
 export default function HomePage() {
   const MODE: 'normal' | 'tournament' = (process.env.NEXT_PUBLIC_MODE === 'tournament') ? 'tournament' : 'normal';
@@ -44,6 +45,8 @@ export default function HomePage() {
     return m ? Number(m[1]) : null;
   }, [matchId]);
 
+  const ICONS: Record<'R'|'P'|'S', string> = { R: '👊', P: '✋', S: '✌️' };
+  const LABELS: Record<'R'|'P'|'S', string> = { R: 'Rock', P: 'Paper', S: 'Scissors' };
   const MoveChip = ({ move, align = 'left' as 'left'|'right' }: { move: 'R'|'P'|'S'|'-'; align?: 'left'|'right' }) => {
     const label = (move || '-') as 'R'|'P'|'S'|'-';
     const bg = label === 'R' ? '#2b1d1d' : label === 'P' ? '#1d2431' : label === 'S' ? '#2b2a1d' : '#1f1f1f';
@@ -51,12 +54,24 @@ export default function HomePage() {
     return (
       <span style={{
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        width: 34, height: 28, padding: '2px 6px', borderRadius: 8,
-        background: bg, color: fg, fontWeight: 700, fontFamily: 'monospace',
+        width: 44, height: 40, padding: '4px 8px', borderRadius: 10,
+        background: bg, color: fg, fontWeight: 700, fontSize: 22,
         marginLeft: align === 'right' ? 'auto' : 0
-      }}>{label}</span>
+      }} aria-label={label as string}>{label === '-' ? '-' : ICONS[label as 'R'|'P'|'S']}</span>
     );
   };
+  const MoveButton = ({ m, onClick, disabled }: { m: 'R'|'P'|'S'; onClick: () => void; disabled: boolean }) => (
+    <button
+      className={`move card move-${m}`}
+      disabled={disabled}
+      onClick={onClick}
+      aria-label={LABELS[m]}
+      style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '16px 22px' }}
+    >
+      <span style={{ fontSize: 26 }}>{ICONS[m]}</span>
+      <span style={{ fontWeight: 800, fontSize: 18, letterSpacing: 0.3 }}>{LABELS[m]}</span>
+    </button>
+  );
   const agent = useMemo(() => new BskyAgent({ service: `${process.env.NEXT_PUBLIC_ATPROTO_PDS_URL || 'https://bsky.social'}` }), []);
   const apiBase = process.env.NEXT_PUBLIC_MATCH_ENGINE_HTTP || 'http://localhost:8083';
   const coordBase = process.env.NEXT_PUBLIC_COORDINATOR_HTTP || 'http://localhost:8082';
@@ -373,6 +388,35 @@ export default function HomePage() {
     processedKeyedRef.set.clear?.();
   };
 
+  // --- AI mode (single-player) ---
+  const [aiMode, setAiMode] = useState<boolean>(false);
+  const aiRef = useRef<IocainePowderAI | null>(null);
+  const [aiPlan, setAiPlan] = useState<{ aiMove: RPS; predicts: RPS } | null>(null);
+  const [peekText, setPeekText] = useState<string>('');
+
+  const startAiMatch = () => {
+    setAiMode(true);
+    resetLocalState();
+    setPeerHandle('AI');
+    setRole('P1');
+    setMatchId('local-ai');
+    setTurn(1);
+    const engine = new IocainePowderAI();
+    aiRef.current = engine;
+    const first = engine.getNextMove(null);
+    const predicts = (engine.lastPredict || 'R') as RPS;
+    setAiPlan({ aiMove: first, predicts });
+    setPeekText('');
+  };
+
+  const stopAiMatch = async () => {
+    setAiMode(false);
+    aiRef.current = null;
+    setAiPlan(null);
+    setPeekText('');
+    await leaveMatch();
+  };
+
   /** Leave current match and reset local state and transports. */
   const leaveMatch = async () => {
     try {
@@ -390,6 +434,26 @@ export default function HomePage() {
 
   /** Send this turn's reveal to the signaling server. */
   const sendReveal = async (move: 'R' | 'P' | 'S') => {
+    if (aiMode) {
+      if (!turn || !aiPlan || !aiRef.current) return;
+      const yourMove = move as RPS;
+      const oppMove = aiPlan.aiMove as RPS;
+      const beats = (a: RPS, b: RPS) => (a === 'R' && b === 'S') || (a === 'S' && b === 'P') || (a === 'P' && b === 'R');
+      let who: 'WIN'|'LOSE'|'DRAW' = 'DRAW';
+      if (yourMove === oppMove) who = 'DRAW'; else if (beats(yourMove, oppMove)) who = 'WIN'; else who = 'LOSE';
+      if (who === 'WIN') setP1Score((s) => s + 1); else if (who === 'LOSE') setP2Score((s) => s + 1);
+      setTurnsTable((prev) => [...prev, { turn, you: yourMove, opp: oppMove, result: who, timeout: 'NONE' }]);
+      setLastResult(who === 'DRAW' ? 'Draw' : who === 'WIN' ? 'You won this turn' : 'Opponent won this turn');
+      setLastMove(yourMove);
+      setSentByTurn((prev) => ({ ...prev, [turn]: { move: yourMove, at: Date.now() } }));
+      // prepare next
+      const nextMove = aiRef.current.getNextMove(yourMove);
+      const predicts = (aiRef.current.lastPredict || 'R') as RPS;
+      setAiPlan({ aiMove: nextMove, predicts });
+      setTurn((t) => t + 1);
+      setPeekText('');
+      return;
+    }
     if (!ws || !matchId || !turn) return;
     const nonce = Math.random().toString(36).slice(2);
     const payload = { type: 'REVEAL', match_id: matchId, turn, move_: move, nonce };
@@ -434,7 +498,7 @@ export default function HomePage() {
             <div style={{ opacity: 0.7 }}>vs</div>
             <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'right' }}>
               <div style={{ fontSize: 12, opacity: 0.8 }}>Opponent</div>
-              <div style={{ fontWeight: 700 }}>{peerHandle || (peerDid || '-')}</div>
+              <div style={{ fontWeight: 700 }}>{aiMode ? 'AI' : (peerHandle || (peerDid || '-'))}</div>
             </div>
           </div>
           <div style={{ display: 'flex', gap: 12, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -442,26 +506,47 @@ export default function HomePage() {
               <button className="btn" onClick={registerEntrant}>Register</button>
             ) : (
               <>
-                <span style={{ opacity: 0.8 }}>Mode: Normal (auto-match)</span>
-                {!ws && <button className="btn" onClick={connect2P}>Find opponent</button>}
-                {!!ws && <button className="btn" onClick={leaveMatch}>Leave match</button>}
-                <button className="btn" onClick={playAgain}>Play again</button>
+                <span style={{ opacity: 0.8 }}>Mode: {aiMode ? 'Single-player (AI)' : 'Normal (auto-match)'}</span>
+                {!aiMode && !ws && <button className="btn" onClick={connect2P}>Find opponent</button>}
+                {!aiMode && !!ws && <button className="btn" onClick={leaveMatch}>Leave match</button>}
+                {!aiMode && <button className="btn" onClick={playAgain}>Play again</button>}
+                {!aiMode && <button className="btn" onClick={startAiMatch}>Play vs AI</button>}
+                {aiMode && <button className="btn" onClick={stopAiMatch}>Back to PvP</button>}
               </>
             )}
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
               <span>Turn: <strong>{turn || '-'}</strong></span>
-              <span style={{ fontSize: 22 }}>Time left: <strong>{secondsLeft}s</strong></span>
-              <span>Score: <strong>You {p1Score} – {p2Score} {peerHandle || (peerDid || 'Opp')}</strong></span>
+              {!aiMode && <span style={{ fontSize: 22 }}>Time left: <strong>{secondsLeft}s</strong></span>}
             </div>
-            <div style={{ display: 'flex', gap: 12, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <button className="move" disabled={!ws || !matchId || !turn} onClick={() => sendReveal('R')}>Rock</button>
-              <button className="move" disabled={!ws || !matchId || !turn} onClick={() => sendReveal('P')}>Paper</button>
-              <button className="move" disabled={!ws || !matchId || !turn} onClick={() => sendReveal('S')}>Scissors</button>
+            {/* HUD / Scorecards */}
+            <div style={{ display: 'flex', gap: 14, alignItems: 'stretch', flexWrap: 'wrap' }}>
+              {(() => {
+                const ties = turnsTable.filter(r => r.result === 'DRAW').length;
+                const oppLabel = aiMode ? 'AI' : 'OPP';
+                return (
+                  <>
+                    <div className="stat card"><div className="stat-num">{p1Score}</div><div className="stat-label">YOU</div></div>
+                    <div className="stat card"><div className="stat-num">{ties}</div><div className="stat-label">TIES</div></div>
+                    <div className="stat card"><div className="stat-num">{p2Score}</div><div className="stat-label">{oppLabel}</div></div>
+                  </>
+                );
+              })()}
             </div>
+            <div className="moves-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(160px, 1fr))', gap: 12, marginTop: 12 }}>
+              <MoveButton m="R" disabled={(!aiMode && (!ws || !matchId || !turn)) || (aiMode && !turn)} onClick={() => sendReveal('R')} />
+              <MoveButton m="P" disabled={(!aiMode && (!ws || !matchId || !turn)) || (aiMode && !turn)} onClick={() => sendReveal('P')} />
+              <MoveButton m="S" disabled={(!aiMode && (!ws || !matchId || !turn)) || (aiMode && !turn)} onClick={() => sendReveal('S')} />
+              {aiMode && !!aiPlan && (
+                <button className="btn" onClick={() => setPeekText(`🤖 AI is thinking: ${ICONS[aiPlan.aiMove]} because it predicts you will play ${ICONS[aiPlan.predicts]}`)} style={{ gridColumn: '1 / -1', justifySelf: 'start' }}>Peek</button>
+              )}
+            </div>
+            {aiMode && !!peekText && (
+              <div style={{ marginTop: 4, opacity: 0.9 }}>{peekText}</div>
+            )}
             {!!lastResult && (
               <div style={{ marginTop: 8 }}>
                 <span>
-                  {lastResult}{lastMove ? ` (you played ${lastMove})` : ''}
+                  {lastResult}{lastMove ? ` (you played ${ICONS[lastMove]})` : ''}
                 </span>
               </div>
             )}
@@ -471,7 +556,7 @@ export default function HomePage() {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 10, alignItems: 'center', marginBottom: 6 }}>
                   <div style={{ fontWeight: 700, opacity: 0.9 }}>YOU ({session.handle})</div>
                   <div style={{ textAlign: 'center', fontWeight: 700, opacity: 0.9 }}>ROUND LOG</div>
-                  <div style={{ textAlign: 'right', fontWeight: 700, opacity: 0.9 }}>OPP ({peerHandle || (peerDid || '-')})</div>
+                  <div style={{ textAlign: 'right', fontWeight: 700, opacity: 0.9 }}>{aiMode ? 'OPP (AI)' : `OPP (${peerHandle || (peerDid || '-')})`}</div>
                 </div>
                 {turnsTable.map((row) => {
                   const icon = row.result === 'WIN' ? '✓' : row.result === 'LOSE' ? '✕' : '≡';
@@ -536,12 +621,15 @@ export default function HomePage() {
         .pz-app { max-width: 1100px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
         .btn { padding: 12px 14px !important; border-radius: 12px !important; border: 1px solid rgba(255,255,255,0.14) !important; 
           background: var(--glass) !important; backdrop-filter: blur(8px); color: #e6edf6 !important; }
-        .move { padding: 14px 18px !important; border-radius: 999px !important; border: 0 !important; color: white !important;
-          background: linear-gradient(180deg,hsl(var(--h1) 80% 52%), hsl(var(--h1) 80% 44%)) !important; box-shadow: 0 10px 28px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.2);
-          transition: transform .06s ease, filter .2s ease; }
+        .card { background: var(--glass); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; box-shadow: 0 10px 28px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.08); }
+        .move { border: 0 !important; color: white !important; transition: transform .06s ease, filter .2s ease; }
         .move:active { transform: translateY(1px); }
-        .move:nth-of-type(2) { background: linear-gradient(180deg,hsl(50 90% 58%), hsl(43 90% 48%)) !important; }
-        .move:nth-of-type(3) { background: linear-gradient(180deg,hsl(var(--h2) 80% 52%), hsl(var(--h2) 80% 44%)) !important; }
+        .move-R { background: linear-gradient(180deg,hsl(var(--h1) 80% 52%), hsl(var(--h1) 80% 44%)) !important; }
+        .move-P { background: linear-gradient(180deg,hsl(50 90% 58%), hsl(43 90% 48%)) !important; }
+        .move-S { background: linear-gradient(180deg,hsl(var(--h2) 80% 52%), hsl(var(--h2) 80% 44%)) !important; }
+        .stat { min-width: 120px; padding: 12px 16px; text-align: center; }
+        .stat-num { font-size: 28px; font-weight: 900; line-height: 1; }
+        .stat-label { opacity: .85; margin-top: 6px; letter-spacing: .8px; font-size: 12px; }
         pre { background: rgba(0,0,0,.55) !important; }
       `}</style>
     </main>
