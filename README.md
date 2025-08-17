@@ -121,3 +121,58 @@ gcloud run services update rps-signaling    --region us-central1 --concurrency 5
 ## Notes
 - Web Audit panel renders only when `debug` is true in the client state.
 - Turn deadline in dev is `TURN_DEADLINE_MS=30000` (30s).
+
+## Fairness
+
+This project uses a standard commit–reveal scheme to ensure neither player can
+gain information advantage or change their move after seeing the opponent’s.
+
+- Hash function: SHA‑256
+- Commit inputs and order: `move || nonce || turn || match_id || did`
+  - `move`: one of `R|P|S`
+  - `nonce`: client‑random string
+  - `turn`: 32‑bit big‑endian integer
+  - `match_id`: unique match identifier
+  - `did`: player DID
+- Commit is `hex(SHA256(...))`
+
+Reference implementation:
+```12:33:services/match-engine/src/main.rs
+/// Computes the canonical commit hash for (move, nonce, turn, match_id, did).
+async fn commit(Json(req): Json<CommitReq>) -> Json<CommitResp> {
+    let mut hasher = Sha256::new();
+    hasher.update(req.move_.as_bytes());
+    hasher.update(req.nonce.as_bytes());
+    hasher.update(req.turn.to_be_bytes());
+    hasher.update(req.match_id.as_bytes());
+    hasher.update(req.did.as_bytes());
+    let commit = hasher.finalize().encode_hex::<String>();
+    Json(CommitResp { ok: true, commit })
+}
+```
+
+Reveal verification recomputes the hash and compares:
+```41:51:services/match-engine/src/main.rs
+async fn reveal(Json(req): Json<RevealReq>) -> Json<RevealResp> {
+    let mut hasher = Sha256::new();
+    hasher.update(req.move_.as_bytes());
+    hasher.update(req.nonce.as_bytes());
+    hasher.update(req.turn.to_be_bytes());
+    hasher.update(req.match_id.as_bytes());
+    hasher.update(req.did.as_bytes());
+    let computed = hasher.finalize().encode_hex::<String>();
+    Json(RevealResp { ok: true, valid: computed == req.commit })
+}
+```
+
+Turn flow:
+- Server emits `TURN_START` with a deadline.
+- Clients send `REVEAL` (move + nonce). When both are present, the server
+  resolves deterministically and broadcasts `TURN_RESULT`.
+- If a player misses the deadline, the server resolves via a canonical
+  substitution rule that prevents the late player from gaining advantage.
+
+Relevant files:
+- `services/match-engine/src/main.rs`: commit/reveal helpers.
+- `services/signaling/src/main.rs`: collects reveals, handles deadlines, timeouts,
+  and broadcasts `TURN_START/RESULT`, `MATCH_RESULT`, `OPPONENT_LEFT`.
