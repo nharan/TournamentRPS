@@ -93,6 +93,7 @@ async fn main() {
         .route("/ticket", post(issue_ticket))
         .route("/ready_for_round", post(ready_for_round))
         .route("/queue_ready", post(queue_ready))
+        .route("/queue_cancel", post(queue_cancel))
         .route("/register", post(register))
         .route("/start_round", post(start_round))
         .route("/assignment", get(assignment))
@@ -181,6 +182,28 @@ async fn queue_ready(Json(req): Json<QueueReadyReq>) -> Json<QueueReadyResp> {
         *w = Some((req.did, Instant::now()));
         return Json(QueueReadyResp::WAIT);
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct QueueCancelReq { did: String }
+
+#[derive(Debug, Serialize)]
+struct QueueCancelResp { ok: bool, removed: bool }
+
+/// Allows a client to cancel their waiting status in the simple pairing queue.
+async fn queue_cancel(Json(req): Json<QueueCancelReq>) -> Json<QueueCancelResp> {
+    // Remove from WAITING if present
+    let mut removed = false;
+    {
+        let mut w = WAITING.lock().unwrap();
+        if let Some((cur, _)) = &*w {
+            if *cur == req.did { *w = None; removed = true; }
+        }
+    }
+    // Also clear any prepared assignment for this DID
+    ASSIGNMENTS.lock().unwrap().remove(&req.did);
+    ASSIGNMENT_TS.lock().unwrap().remove(&req.did);
+    Json(QueueCancelResp { ok: true, removed })
 }
 
 // --- Registration & tournament start ---

@@ -231,11 +231,17 @@ export default function HomePage() {
 
   /** Establish WS and WebRTC DataChannel using an ASSIGN payload. */
   const connectWithAssignment = async (assign: any) => {
+    // If AI mode became active, ignore stale PvP assignment
+    if (aiModeRef.current) {
+      try { await cancelQueue(); } catch {}
+      return;
+    }
     setMatchId(assign.match_id); setRole(assign.role); setPeerDid(assign?.peer?.did || null); setPeerHandle(assign?.peer?.handle || null);
     const myRole: 'P1'|'P2' = assign.role;
     const url = `${wsBase}?ticket=${encodeURIComponent(assign.ticket)}`;
     const socket = new WebSocket(url);
     socket.onopen = async () => {
+      if (aiModeRef.current) { try { socket.close(1000, 'ai_mode'); } catch {} return; }
       const peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
       peer.onicecandidate = (e) => { if (e.candidate) socket.send(JSON.stringify({ type: 'ICE', match_id: assign.match_id, candidate: JSON.stringify(e.candidate) })); };
       peer.ondatachannel = (e) => setDc(e.channel);
@@ -247,6 +253,7 @@ export default function HomePage() {
       }
     };
     socket.onmessage = async (ev) => {
+      if (aiModeRef.current) { try { socket.close(1000, 'ai_mode'); } catch {} return; }
       const txt = String(ev.data);
       try {
         const msg = JSON.parse(txt);
@@ -355,6 +362,7 @@ export default function HomePage() {
     for (let i = 0; i < 20; i++) {
       // If we already connected while polling, stop
       if (ws) { findingRef.current = false; return; }
+      if (aiModeRef.current) { try { await cancelQueue(); } catch {}; findingRef.current = false; return; }
       const res = await fetch(`${coordBase}/queue_ready`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -370,6 +378,7 @@ export default function HomePage() {
       findingRef.current = false;
       return;
     }
+    if (aiModeRef.current) { try { await cancelQueue(); } catch {}; findingRef.current = false; return; }
     await connectWithAssignment(assign);
     findingRef.current = false;
   };
@@ -405,15 +414,19 @@ export default function HomePage() {
 
   // --- AI mode (single-player) ---
   const [aiMode, setAiMode] = useState<boolean>(false);
+  const aiModeRef = useRef<boolean>(false);
+  useEffect(() => { aiModeRef.current = aiMode; }, [aiMode]);
   const aiRef = useRef<AiEngine | null>(null);
   const [aiPlan, setAiPlan] = useState<{ aiMove: RPS; predicts: RPS } | null>(null);
   const [peekText, setPeekText] = useState<string>('');
   const [aiBot, setAiBot] = useState<BotSpec | null>(null);
   const [showBotPicker, setShowBotPicker] = useState<boolean>(false);
 
-  const startAiMatch = (bot?: BotSpec) => {
+  const startAiMatch = async (bot?: BotSpec) => {
+    // Switch to AI mode and cleanly exit any ongoing PvP match so the opponent is notified
     setAiMode(true);
-    resetLocalState();
+    await cancelQueue();
+    await leaveMatch();
     const chosen = bot || BOTS[0];
     setAiBot(chosen);
     setPeerHandle(chosen?.name || 'AI');
@@ -448,6 +461,14 @@ export default function HomePage() {
       setWs(null); setPc(null); setDc(null);
       resetLocalState();
     }
+  };
+
+  // Explicitly cancel any queue wait when switching to AI mode or leaving PvP intents
+  const cancelQueue = async () => {
+    if (!session) return;
+    try {
+      await fetch(`${coordBase}/queue_cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ did: session.did }) });
+    } catch {}
   };
 
   /** Leave and immediately requeue for a new opponent. */
@@ -566,7 +587,7 @@ export default function HomePage() {
             ) : (
               <>
                 <span style={{ opacity: 0.8 }}>Mode: {aiMode ? 'Single-player (AI)' : 'Normal (auto-match)'}</span>
-                {!aiMode && !ws && session && <button className="btn" onClick={connect2P}>Find opponent</button>}
+                {!aiMode && !ws && session && <button className="btn" onClick={async () => { await cancelQueue(); connect2P(); }}>Find opponent</button>}
                 {!aiMode && !!ws && <button className="btn" onClick={leaveMatch}>Leave match</button>}
                 {!aiMode && <button className="btn" onClick={playAgain}>Play again</button>}
                 {!aiMode && <button className="btn" onClick={() => setShowBotPicker((s)=>!s)}>Play Bots</button>}
